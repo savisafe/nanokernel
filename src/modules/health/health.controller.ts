@@ -12,7 +12,7 @@ export class HealthController {
   getHealth() {
     return {
       status: "ok",
-      service: "ai-manager",
+      service: "ai-bot",
       timestamp: new Date().toISOString(),
     };
   }

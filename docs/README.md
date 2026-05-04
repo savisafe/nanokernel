@@ -20,7 +20,7 @@ Backend для AI-менеджера в чатах: **Telegram** и **WhatsApp**
 ### 1. Клонирование и зависимости
 
 ```bash
-cd ai-manager
+cd ai-bot
 npm install
 ```
 
