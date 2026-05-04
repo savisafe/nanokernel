@@ -115,10 +115,16 @@ export class ConfigManagementService {
     const useRag =
       rawUseRag === true || (typeof rawUseRag === "string" && rawUseRag.trim().toLowerCase() === "true");
 
+    const embedded =
+      raw.promptProfile && typeof raw.promptProfile === "object" && !Array.isArray(raw.promptProfile)
+        ? (raw.promptProfile as PromptProfileFileJson)
+        : undefined;
+
     return {
       id: resolvedId,
       llmPromptProfile,
       useRag,
+      ...(embedded ? { promptProfile: embedded } : {}),
     };
   }
 
@@ -126,6 +132,10 @@ export class ConfigManagementService {
     profileSlug: string,
     botRaw: BotConfigurationFileJson,
   ): Promise<ResolvedLlmPromptProfile> {
+    const embedded = botRaw.promptProfile;
+    if (embedded && typeof embedded === "object" && !Array.isArray(embedded)) {
+      return this.promptProfileService.resolveFromPromptProfileJson(profileSlug, embedded);
+    }
     const row = await this.prisma.promptProfile.findUnique({ where: { slug: profileSlug } });
     if (row) {
       const raw = this.asJsonObject(row.data) as PromptProfileFileJson;

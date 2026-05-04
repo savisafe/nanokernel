@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
+import type { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
 import { PromptProfileFileJson, ResolvedLlmPromptProfile } from "./prompt-profile.types";
 import {
   DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_MAX_LENGTH,
@@ -16,8 +17,9 @@ export class PromptProfileService implements OnModuleInit {
   constructor(private readonly botConfiguration: BotConfigurationService) {}
 
   onModuleInit(): void {
-    const id = this.botConfiguration.get().llmPromptProfile;
-    this.profile = this.loadResolvedProfile(id);
+    const bot = this.botConfiguration.get();
+    const id = bot.llmPromptProfile;
+    this.profile = this.loadResolvedProfile(id, bot);
     this.logger.log(
       `LLM prompt profile "${this.profile.id}" (company="${this.profile.companyName}"${this.profile.humanLikeMode ? ", human-like mode" : ""}${this.profile.openTopicsMode ? ", open topics" : ""})`,
     );
@@ -27,7 +29,6 @@ export class PromptProfileService implements OnModuleInit {
     return this.profile;
   }
 
-  /** Профиль из файла `config/prompt-profiles/<profileId>.json` (для ConfigManagement / админки). */
   resolveProfileFromFilesystem(profileId: string): ResolvedLlmPromptProfile {
     const filePath = path.resolve(process.cwd(), "config", "prompt-profiles", `${profileId}.json`);
     try {
@@ -42,7 +43,6 @@ export class PromptProfileService implements OnModuleInit {
     }
   }
 
-  /** Профиль из JSON (БД или тело запроса). */
   resolveFromPromptProfileJson(profileId: string, raw: PromptProfileFileJson): ResolvedLlmPromptProfile {
     const topic = typeof raw.topic === "string" ? raw.topic.trim() : undefined;
     const forbiddenTopics = Array.isArray(raw.forbiddenTopics)
@@ -178,7 +178,13 @@ export class PromptProfileService implements OnModuleInit {
     };
   }
 
-  private loadResolvedProfile(profileId: string): ResolvedLlmPromptProfile {
+  private loadResolvedProfile(
+    profileId: string,
+    bot: ResolvedBotConfiguration,
+  ): ResolvedLlmPromptProfile {
+    if (bot.promptProfile) {
+      return this.resolveFromPromptProfileJson(profileId, bot.promptProfile);
+    }
     return this.resolveProfileFromFilesystem(profileId);
   }
 

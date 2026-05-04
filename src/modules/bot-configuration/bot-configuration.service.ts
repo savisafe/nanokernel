@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
 import {
   BotConfigurationFileJson,
   ResolvedBotConfiguration,
@@ -56,10 +57,22 @@ export class BotConfigurationService implements OnModuleInit {
       rawUseRag === true ||
       (typeof rawUseRag === "string" && rawUseRag.trim().toLowerCase() === "true");
 
+    const promptProfile = this.extractEmbeddedPromptProfile(raw.promptProfile);
+
     return {
       id: configurationId,
       llmPromptProfile,
       useRag,
+      ...(promptProfile ? { promptProfile } : {}),
     };
+  }
+
+  private extractEmbeddedPromptProfile(
+    value: BotConfigurationFileJson["promptProfile"],
+  ): PromptProfileFileJson | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    return value as PromptProfileFileJson;
   }
 }

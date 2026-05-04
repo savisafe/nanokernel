@@ -1,3 +1,14 @@
 {
-  "llmPromptProfile": "open-topics"
+  "llmPromptProfile": "open-topics",
+  "promptProfile": {
+    "companyName": "ассистент",
+    "openTopicsMode": true,
+    "persona": "Ты дружелюбный AI-собеседник. Поддерживай естественный диалог на любые темы",
+    "language": "русский",
+    "primaryGoals": [
+      "Отвечать по существу на вопросы и интересы пользователя.",
+      "Не ограничивать разговор одной продуктовой нишей, если пользователь не просит об этом."
+    ],
+    "scopeFile": null
+  }
 }
