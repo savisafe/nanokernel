@@ -1,6 +1,6 @@
 # AI Manager
 
-Backend для AI-менеджера в чатах: **Telegram** и **WhatsApp** (webhook), общая диалоговая логика (`DialogService`), сохранение истории в **PostgreSQL**, опционально **локальная LLM** через провайдер с OpenAI-совместимым API (**Ollama**, **LM Studio** и т.п.). Если LLM выключена или недоступна, используются короткие встроенные текстовые шаблоны в коде (не отдельные JSON-файлы).
+Backend для AI-менеджера в чатах: **Telegram** и **WhatsApp** (webhook), общая диалоговая логика (`DialogService`), сохранение истории в **PostgreSQL**, опционально **локальная LLM** через провайдер с OpenAI-совместимым API (**LM Studio** и т.п.). Если LLM выключена или недоступна, используются короткие встроенные текстовые шаблоны в коде (не отдельные JSON-файлы).
 
 Текущий статус разработки: [DEVELOPMENT_CONTEXT.md](DEVELOPMENT_CONTEXT.md).
 
@@ -11,7 +11,7 @@ Backend для AI-менеджера в чатах: **Telegram** и **WhatsApp**
 - **Node.js** 20+ (LTS)
 - **Docker** и **Docker Compose** (для PostgreSQL)
 - **ngrok** (или другой HTTPS-туннель) — для Telegram/WhatsApp webhook с локальной машины
-- **Ollama** или **LM Studio** (локальный сервер с `…/v1/chat/completions`) — если включена генерация через LLM (`LLM_ENABLED=true`)
+- **LM Studio** (локальный сервер с `…/v1/chat/completions`) — если включена генерация через LLM (`LLM_ENABLED=true`)
 
 ---
 
@@ -175,17 +175,11 @@ WHATSAPP_APP_SECRET=<App Secret из настроек приложения Meta>
 
 ---
 
-## Локальная LLM (Ollama, LM Studio)
+## Локальная LLM (LM Studio)
 
 `LlmService` ходит в **`POST {LLM_BASE_URL}/chat/completions`** (OpenAI-совместимый путь). Имя модели **не задаётся в `.env`**: при старте первого запроса выполняется **`GET {LLM_BASE_URL}/models`**, берётся **первая запись в `data[]`, у которой `id` не похож на embedding** (строка `embed` в id пропускается — чтобы не выбрать `text-embedding-…` рядом с чат-моделью). Заголовок запросов: `Authorization: Bearer local` (для локальных серверов достаточно фиктивного значения).
 
-### Ollama
-
-1. Установи [Ollama](https://ollama.com), скачай модель:
-
-```bash
-ollama pull llama3:latest
-```
+1. Установка локальной модели
 
 2. Проверка, что модель видна:
 
@@ -195,7 +189,7 @@ curl -s http://127.0.0.1:11434/api/tags
 
 Список не должен быть пустым.
 
-3. В `.env` укажи базовый URL API (у Ollama это порт **11434**, суффикс **`/v1`**):
+3. В `.env` укажи базовый URL API:
 
 ```env
 LLM_ENABLED=true
@@ -243,8 +237,6 @@ LLM_MAX_TOKENS=2048
 
 Если `LLM_ENABLED=false` или провайдер LLM недоступен, ответы идут из **встроенных шаблонов** в `DialogService` (короткие фразы для стадий `contact` / `qualification` в зависимости от `conversation.stage` в БД).
 
-Сообщение `listen tcp 127.0.0.1:11434: address already in use` означает, что Ollama **уже запущена** — второй раз `ollama serve` не нужен.
-
 ---
 
 ## Полезные npm-скрипты
@@ -282,7 +274,6 @@ LLM_MAX_TOKENS=2048
 | Telegram не отвечает | `TELEGRAM_WEBHOOK_URL` заканчивается на `/webhooks/telegram`; `npm run telegram:webhook:set`; ngrok и `npm run start:dev` запущены |
 | `404` в `last_error_message` у Telegram | В webhook указан только корень ngrok без пути `/webhooks/telegram` |
 | Сменился URL ngrok | Обновить `TELEGRAM_WEBHOOK_URL` и снова `npm run telegram:webhook:set` |
-| Ollama: `models: []` | Выполнить `ollama pull <модель>` |
 | LM Studio: «No models loaded» | Загрузить модель в Developer / `lms load`; дождаться Ready |
 | Ответы «шаблонные», не LLM | `LLM_ENABLED=true`, с машины с Node доступен `LLM_BASE_URL` (тот же хост/порт, что у сервера LLM); `GET …/models` не пустой; для reasoning-моделей — достаточно большой `LLM_MAX_TOKENS` (см. раздел выше) |
 | Пустой ответ LLM, в логах провайдера пустой `content`, полный `reasoning_content`, `finish_reason: length` | Увеличить `LLM_MAX_TOKENS` (например 2048+) или снизить объём reasoning в LM Studio |
