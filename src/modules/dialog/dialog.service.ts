@@ -69,7 +69,7 @@ export class DialogService implements OnModuleInit {
 
   /**
    * Один ход диалога с диагностикой (system prompt, retrieval).
-   * Не используется вебхуками; для POST /admin/test-dialog.
+   * Не используется вебхуками; для внутренней диагностики и тестов.
    */
   async runDiagnosticTurn(input: DialogInput, snapshot: DialogRuntimeSnapshot): Promise<DialogOutputWithDiagnostics> {
     const { conversation } = await this.getOrCreateConversation(input.channel, input.externalUserId);

@@ -9,7 +9,6 @@ import { PrismaModule } from "./prisma/prisma.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { RagModule } from "./rag/rag.module";
-import { AdminModule } from "./admin/admin.module";
 
 @Module({
   imports: [
@@ -23,7 +22,6 @@ import { AdminModule } from "./admin/admin.module";
     WhatsAppModule,
     TelegramModule,
     RagModule,
-    AdminModule,
   ],
 })
 export class AppModule {}
