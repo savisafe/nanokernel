@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
-import type { DialogServiceConfig } from "../dialog/dialog.config.types";
+import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
 import {
   BotConfigurationFileJson,
   ResolvedBotConfiguration,
@@ -14,8 +14,16 @@ export class BotConfigurationService implements OnModuleInit {
   private readonly resolved: ResolvedBotConfiguration;
 
   constructor() {
-    const id = process.env.BOT_CONFIGURATION?.trim() || "default";
+    const id = this.normalizeConfigurationId(process.env.BOT_CONFIGURATION?.trim() || "default");
     this.resolved = this.load(id);
+  }
+
+  private normalizeConfigurationId(raw: string): string {
+    const t = raw.trim();
+    if (t.length === 0) {
+      return "default";
+    }
+    return /\.json$/i.test(t) ? t.slice(0, -5) : t;
   }
 
   onModuleInit(): void {
@@ -70,11 +78,11 @@ export class BotConfigurationService implements OnModuleInit {
     };
   }
 
-  private extractDialog(value: BotConfigurationFileJson["dialog"]): DialogServiceConfig | undefined {
+  private extractDialog(value: BotConfigurationFileJson["dialog"]): DialogConfigFileJson | undefined {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return undefined;
     }
-    return value as DialogServiceConfig;
+    return value as DialogConfigFileJson;
   }
 
   private extractEmbeddedPromptProfile(

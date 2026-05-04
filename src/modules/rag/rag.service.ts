@@ -86,8 +86,7 @@ export class RagService implements OnModuleInit {
     for (const chunk of chunks) {
       const vector = await this.embed(chunk.text);
       this.chunks.push({ id: chunk.id, text: chunk.text, vector });
-      
-      insert.run(chunk.id, chunk.text, new Uint8Array(new Float32Array(vector).buffer));
+      insert.run(BigInt(chunk.id), chunk.text, new Uint8Array(new Float32Array(vector).buffer));
     }
   }
 

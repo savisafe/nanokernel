@@ -93,9 +93,19 @@ export class PromptProfileService implements OnModuleInit {
       typeof raw.noKnowledgeReply === "string" && raw.noKnowledgeReply.trim().length > 0
         ? raw.noKnowledgeReply.trim()
         : undefined;
-    const retrievalChunkSize = this.parseIntInRange(raw.retrievalChunkSize, 200, 8000);
-    const retrievalChunkOverlap = this.parseIntInRange(raw.retrievalChunkOverlap, 0, 1000);
-    const retrievalTopK = this.parseIntInRange(raw.retrievalTopK, 1, 20);
+    const nestedRetrieval =
+      raw.retrieval && typeof raw.retrieval === "object" && !Array.isArray(raw.retrieval)
+        ? raw.retrieval
+        : undefined;
+    const retrievalChunkSize =
+      (nestedRetrieval ? this.parseIntInRange(nestedRetrieval.chunkSize, 200, 8000) : undefined) ??
+      this.parseIntInRange(raw.retrievalChunkSize, 200, 8000);
+    const retrievalChunkOverlap =
+      (nestedRetrieval ? this.parseIntInRange(nestedRetrieval.chunkOverlap, 0, 1000) : undefined) ??
+      this.parseIntInRange(raw.retrievalChunkOverlap, 0, 1000);
+    const retrievalTopK =
+      (nestedRetrieval ? this.parseIntInRange(nestedRetrieval.topK, 1, 20) : undefined) ??
+      this.parseIntInRange(raw.retrievalTopK, 1, 20);
 
     let scopeText: string | undefined;
     if (typeof raw.scopeText === "string" && raw.scopeText.trim().length > 0) {

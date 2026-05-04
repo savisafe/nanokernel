@@ -42,6 +42,11 @@ export interface PromptProfileFileJson {
   scopeFile?: string | null;
   strictKnowledgeMode?: boolean | string;
   noKnowledgeReply?: string | null;
+  retrieval?: {
+    topK?: number | string | null;
+    chunkSize?: number | string | null;
+    chunkOverlap?: number | string | null;
+  } | null;
   retrievalChunkSize?: number | string | null;
   retrievalChunkOverlap?: number | string | null;
   retrievalTopK?: number | string | null;

@@ -8,7 +8,8 @@ import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
-import type { DialogServiceConfig } from "./dialog.config.types";
+import type { EffectiveDialogRuntime } from "./dialog.config.types";
+import { resolveEffectiveDialog } from "./dialog-effective";
 import { interpolateTemplate } from "./dialog-template.utils";
 import {
   ChannelType,
@@ -23,6 +24,7 @@ import {
 @Injectable()
 export class DialogService implements OnModuleInit {
   private defaultSnapshot!: DialogRuntimeSnapshot;
+  private readonly effective: EffectiveDialogRuntime;
   private readonly tokenSplitRegex: RegExp;
   private readonly retrievalStopWords: Set<string>;
   private readonly chunkBreakpoints: readonly string[];
@@ -35,7 +37,8 @@ export class DialogService implements OnModuleInit {
     private readonly botConfiguration: BotConfigurationService,
     private readonly ragService: RagService,
   ) {
-    const d = this.getDialogConfig();
+    this.effective = resolveEffectiveDialog(this.botConfiguration.get());
+    const d = this.effective;
     this.tokenSplitRegex = new RegExp(d.tokenization.splitPattern, d.tokenization.splitFlags);
     this.retrievalStopWords = new Set(d.tokenization.stopWords);
     this.chunkBreakpoints = d.chunkBoundaries.breakpoints;
@@ -151,23 +154,11 @@ export class DialogService implements OnModuleInit {
     return { replyText, stage: nextStage };
   }
 
-  private getDialogConfig(): DialogServiceConfig {
-    const d = this.botConfiguration.get().dialog;
-    if (!d) {
-      throw new Error(
-        `Missing "dialog" in config/configurations/${this.botConfiguration.get().id}.json (see knowledge-consultant.json).`,
-      );
+  private effectiveFor(bot: ResolvedBotConfiguration): EffectiveDialogRuntime {
+    if (bot.id === this.botConfiguration.get().id) {
+      return this.effective;
     }
-    return d;
-  }
-
-  private dialogOf(bot: ResolvedBotConfiguration): DialogServiceConfig {
-    if (!bot.dialog) {
-      throw new Error(
-        `Missing "dialog" in config for BOT_CONFIGURATION="${bot.id}" (см. config/configurations/${bot.id}.json).`,
-      );
-    }
-    return bot.dialog;
+    return resolveEffectiveDialog(bot);
   }
 
   private async getOrCreateConversation(channel: string, externalUserId: string) {
@@ -217,7 +208,7 @@ export class DialogService implements OnModuleInit {
   }
 
   private buildReply(stage: string, clientText: string): string {
-    const { templateStages } = this.getDialogConfig();
+    const { templateStages } = this.effective;
     const selected = templateStages[stage] ?? templateStages.contact;
     if (!selected) {
       return clientText;
@@ -288,7 +279,7 @@ export class DialogService implements OnModuleInit {
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
-    const dialogCfg = this.dialogOf(snap.bot);
+    const dialogCfg = this.effectiveFor(snap.bot);
     if (!this.llmService.isEnabled()) {
       return {
         replyText: templateFallback,
@@ -370,7 +361,7 @@ export class DialogService implements OnModuleInit {
     if (!p.scopeText || p.scopeText.trim().length === 0) {
       return [];
     }
-    const defaults = this.dialogOf(bot).chunkDefaults;
+    const defaults = this.effectiveFor(bot).chunkDefaults;
     const chunkSize = p.retrievalChunkSize ?? defaults.chunkSize;
     const overlap = Math.min(
       p.retrievalChunkOverlap ?? defaults.overlap,
@@ -385,7 +376,24 @@ export class DialogService implements OnModuleInit {
     knowledgeContext: string | undefined,
     snap: DialogRuntimeSnapshot,
   ): string {
-    const frame = this.dialogOf(snap.bot).systemPromptFrame;
+    const eff = this.effectiveFor(snap.bot);
+    const knowledgeBlockRaw = knowledgeContext ?? "";
+
+    if (eff.systemKind === "template") {
+      const stageLine = snap.profile.openTopicsMode
+        ? eff.stageFrame.openTopicsStageLine
+        : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
+      return interpolateTemplate(eff.systemPromptTemplate, {
+        knowledgeBlock: knowledgeBlockRaw,
+        channel,
+        stage,
+        stageLine,
+        prefix: snap.llmSystemPromptPrefix,
+        suffix: snap.llmSystemPromptSuffix,
+      });
+    }
+
+    const frame = eff.systemPromptFrame;
     const open = snap.profile.openTopicsMode;
     const stageLine = open
       ? frame.openTopicsStageLine
@@ -404,7 +412,11 @@ export class DialogService implements OnModuleInit {
     p: ResolvedLlmPromptProfile,
     bot: ResolvedBotConfiguration,
   ): { prefix: string; suffix: string } {
-    const suf = this.dialogOf(bot).staticPromptSuffix;
+    const eff = this.effectiveFor(bot);
+    if (eff.systemKind === "template") {
+      return { prefix: "", suffix: "" };
+    }
+    const suf = eff.staticPromptSuffix;
     const company = p.companyName;
     const topic = p.topic;
     const forbidden = p.forbiddenTopics;
@@ -508,7 +520,7 @@ export class DialogService implements OnModuleInit {
 
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */
   private getLlmContextMessageLimit(): number {
-    const cfg = this.getDialogConfig().llmContextMessages;
+    const cfg = this.effective.llmContextMessages;
     const raw = process.env[cfg.envVarName]?.trim();
     if (raw === undefined || raw === "") {
       return cfg.defaultLimit;
@@ -562,7 +574,7 @@ export class DialogService implements OnModuleInit {
     userText: string,
     snap: DialogRuntimeSnapshot,
   ): Promise<{ context?: string; mode: "none" | "lexical" | "rag"; chunks: DialogDiagnosticChunk[] }> {
-    const rp = this.dialogOf(snap.bot).retrievalPresentation;
+    const rp = this.effectiveFor(snap.bot).retrievalPresentation;
     const defaultTopK = rp.defaultTopK;
 
     if (snap.bot.useRag && this.ragService.isInitialized()) {
@@ -628,7 +640,7 @@ export class DialogService implements OnModuleInit {
   }
 
   private tokenizeForRetrieval(text: string): string[] {
-    const minLen = this.getDialogConfig().tokenization.minTokenLength;
+    const minLen = this.effective.tokenization.minTokenLength;
     const raw = text
       .toLowerCase()
       .replace(/ё/g, "е")

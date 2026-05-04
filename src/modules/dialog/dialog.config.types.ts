@@ -80,7 +80,6 @@ export interface DialogStaticPromptSuffix {
   additionalStyleRulePrefix: string;
 }
 
-/** Блок `dialog` в `config/configurations/<BOT_CONFIGURATION>.json`. */
 export interface DialogServiceConfig {
   diagnosticsDefaults: DialogDiagnosticsDefaults;
   templateStages: Record<string, DialogStageTemplates>;
@@ -93,3 +92,32 @@ export interface DialogServiceConfig {
   systemPromptFrame: DialogSystemPromptFrame;
   staticPromptSuffix: DialogStaticPromptSuffix;
 }
+
+/** Короткий `dialog`: один шаблон system prompt + опции; остальное подставляется из кода (defaults). */
+export interface DialogConfigMinimalFile {
+  contextMessages?: number;
+  systemPrompt: { template: string };
+  templateStages?: Record<string, DialogStageTemplates>;
+  fallbackNoKnowledgeReply?: string;
+  chunkDefaults?: Partial<DialogChunkDefaults>;
+  chunkBoundaries?: Partial<DialogChunkBoundaries>;
+  retrievalPresentation?: Partial<DialogRetrievalPresentation>;
+  tokenization?: Partial<DialogTokenization>;
+}
+
+export type DialogConfigFileJson = DialogServiceConfig | DialogConfigMinimalFile;
+
+/** Общие поля для lexical/RAG и лимитов (после resolve). */
+export type DialogSubsystemResolved = Omit<DialogServiceConfig, "systemPromptFrame" | "staticPromptSuffix">;
+
+export type EffectiveDialogRuntime =
+  | ({
+      systemKind: "legacy";
+      systemPromptFrame: DialogSystemPromptFrame;
+      staticPromptSuffix: DialogStaticPromptSuffix;
+    } & DialogSubsystemResolved)
+  | ({
+      systemKind: "template";
+      systemPromptTemplate: string;
+      stageFrame: Pick<DialogSystemPromptFrame, "openTopicsStageLine" | "funnelStageLineTemplate">;
+    } & DialogSubsystemResolved);
