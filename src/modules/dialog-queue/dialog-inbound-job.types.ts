@@ -5,7 +5,6 @@ export type DialogInboundJob =
   | ({ channel: "telegram" } & IncomingTelegramMessage)
   | ({ channel: "whatsapp" } & IncomingWhatsAppMessage);
 
-/** BullMQ не допускает «:» в custom jobId. */
 export function buildDialogInboundJobId(job: DialogInboundJob): string | undefined {
   if (job.channel === "telegram" && job.messageId != null) {
     return `telegram-${job.messageId}`;

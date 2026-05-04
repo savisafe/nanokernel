@@ -1,10 +1,3 @@
-/**
- * Дефолты для обхода strictKnowledgeMode без фрагментов БЗ (приветствия, мета-вопросы).
- * Переопределяются в config/prompt-profiles/*.json → strictKnowledgeConversationalBypass.
- *
- * Важно: в JS `\b` (word boundary) учитывает только [A-Za-z0-9_], поэтому для кириллицы
- * границы слова не работают — не используем `\b` в паттернах под русский текст.
- */
 export const DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_MAX_LENGTH = 180;
 
 export const DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PATTERNS: RegExp[] = [

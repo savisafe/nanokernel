@@ -17,10 +17,6 @@ export class HealthController {
     };
   }
 
-  /**
-   * Мониторинг BullMQ: ожидание, активные, упавшие и т.д.
-   * При недоступном Redis — 503.
-   */
   @Get("queue")
   async getQueueMetrics() {
     if (!isDialogQueueEnabled()) {
