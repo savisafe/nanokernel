@@ -8,6 +8,8 @@ import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
+import type { DialogServiceConfig } from "./dialog.config.types";
+import { interpolateTemplate } from "./dialog-template.utils";
 import {
   ChannelType,
   DialogDiagnosticChunk,
@@ -18,26 +20,13 @@ import {
   KnowledgeChunkRuntime,
 } from "./dialog.types";
 
-/** Шаблоны, если LLM выключен или недоступен. */
-const TEMPLATE_STAGES: Record<string, { replyLines: string[] }> = {
-  contact: {
-    replyLines: [
-      "Спасибо за сообщение!",
-      "Я помогу с консультацией и подбором решения.",
-      "Расскажите, пожалуйста, какая задача сейчас самая приоритетная?",
-    ],
-  },
-  qualification: {
-    replyLines: [
-      "Спасибо за обращение.",
-      "Правильно понял, что запрос такой: \"{clientText}\"?",
-    ],
-  },
-};
-
 @Injectable()
 export class DialogService implements OnModuleInit {
   private defaultSnapshot!: DialogRuntimeSnapshot;
+  private readonly tokenSplitRegex: RegExp;
+  private readonly retrievalStopWords: Set<string>;
+  private readonly chunkBreakpoints: readonly string[];
+  private readonly chunkMinAdvanceChars: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,7 +34,13 @@ export class DialogService implements OnModuleInit {
     private readonly promptProfile: PromptProfileService,
     private readonly botConfiguration: BotConfigurationService,
     private readonly ragService: RagService,
-  ) {}
+  ) {
+    const d = this.getDialogConfig();
+    this.tokenSplitRegex = new RegExp(d.tokenization.splitPattern, d.tokenization.splitFlags);
+    this.retrievalStopWords = new Set(d.tokenization.stopWords);
+    this.chunkBreakpoints = d.chunkBoundaries.breakpoints;
+    this.chunkMinAdvanceChars = d.chunkBoundaries.minAdvanceChars;
+  }
 
   onModuleInit() {
     this.defaultSnapshot = this.composeSnapshot(this.promptProfile.getProfile(), this.botConfiguration.get());
@@ -56,8 +51,8 @@ export class DialogService implements OnModuleInit {
    * Прод-путь использует defaultSnapshot из env и файлов профиля/сборки на старте.
    */
   composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
-    const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile);
-    const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile);
+    const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, bot);
+    const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
     return {
       profile,
       bot,
@@ -156,6 +151,25 @@ export class DialogService implements OnModuleInit {
     return { replyText, stage: nextStage };
   }
 
+  private getDialogConfig(): DialogServiceConfig {
+    const d = this.botConfiguration.get().dialog;
+    if (!d) {
+      throw new Error(
+        `Missing "dialog" in config/configurations/${this.botConfiguration.get().id}.json (see knowledge-consultant.json).`,
+      );
+    }
+    return d;
+  }
+
+  private dialogOf(bot: ResolvedBotConfiguration): DialogServiceConfig {
+    if (!bot.dialog) {
+      throw new Error(
+        `Missing "dialog" in config for BOT_CONFIGURATION="${bot.id}" (см. config/configurations/${bot.id}.json).`,
+      );
+    }
+    return bot.dialog;
+  }
+
   private async getOrCreateConversation(channel: string, externalUserId: string) {
     const user = await this.getOrCreateUser(channel, externalUserId);
 
@@ -203,8 +217,11 @@ export class DialogService implements OnModuleInit {
   }
 
   private buildReply(stage: string, clientText: string): string {
-    const fallback = TEMPLATE_STAGES.contact;
-    const selected = TEMPLATE_STAGES[stage] ?? fallback;
+    const { templateStages } = this.getDialogConfig();
+    const selected = templateStages[stage] ?? templateStages.contact;
+    if (!selected) {
+      return clientText;
+    }
     return selected.replyLines.map((line) => line.replace("{clientText}", clientText)).join("\n");
   }
 
@@ -271,6 +288,7 @@ export class DialogService implements OnModuleInit {
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
+    const dialogCfg = this.dialogOf(snap.bot);
     if (!this.llmService.isEnabled()) {
       return {
         replyText: templateFallback,
@@ -297,9 +315,7 @@ export class DialogService implements OnModuleInit {
     const knowledgeContext = retrieval.context;
 
     if (profile.strictKnowledgeMode && profile.scopeText && !knowledgeContext && !conversationalBypass) {
-      const replyText =
-        profile.noKnowledgeReply ??
-        "По этому запросу в подключённой базе не нашлось подходящего фрагмента. Переформулируйте вопрос или уточните тему — я подберу ответ из документа.";
+      const replyText = profile.noKnowledgeReply ?? dialogCfg.fallbackNoKnowledgeReply;
       const system =
         this.buildSystemPrompt(stage, channel, undefined, snap) +
         (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
@@ -338,11 +354,6 @@ export class DialogService implements OnModuleInit {
     };
   }
 
-  private emptyDiagnostics(snap: DialogRuntimeSnapshot): DialogOutputWithDiagnostics["diagnostics"] {
-    const system = this.buildSystemPrompt("contact", "telegram", undefined, snap);
-    return { systemPrompt: system, chunks: [], retrievalMode: "none" };
-  }
-
   private async buildDiagnosticsForDisabledLlm(
     snap: DialogRuntimeSnapshot,
     stage: string,
@@ -352,12 +363,19 @@ export class DialogService implements OnModuleInit {
     return { systemPrompt: system, chunks: [], retrievalMode: "none" };
   }
 
-  private computeKnowledgeChunksForProfile(p: ResolvedLlmPromptProfile): KnowledgeChunkRuntime[] {
+  private computeKnowledgeChunksForProfile(
+    p: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
     if (!p.scopeText || p.scopeText.trim().length === 0) {
       return [];
     }
-    const chunkSize = p.retrievalChunkSize ?? 1400;
-    const overlap = Math.min(p.retrievalChunkOverlap ?? 200, Math.max(0, chunkSize - 50));
+    const defaults = this.dialogOf(bot).chunkDefaults;
+    const chunkSize = p.retrievalChunkSize ?? defaults.chunkSize;
+    const overlap = Math.min(
+      p.retrievalChunkOverlap ?? defaults.overlap,
+      Math.max(0, chunkSize - defaults.overlapClampSubtract),
+    );
     return this.buildKnowledgeChunks(p.scopeText, chunkSize, overlap);
   }
 
@@ -367,131 +385,121 @@ export class DialogService implements OnModuleInit {
     knowledgeContext: string | undefined,
     snap: DialogRuntimeSnapshot,
   ): string {
+    const frame = this.dialogOf(snap.bot).systemPromptFrame;
     const open = snap.profile.openTopicsMode;
     const stageLine = open
-      ? "Режим: свободный диалог (без воронки продаж)."
-      : `Текущий этап воронки: ${stage}.`;
-    const knowledgeBlock = knowledgeContext
-      ? `\n\nРелевантные фрагменты базы знаний для текущего запроса:\n${knowledgeContext}`
-      : "";
-    return `${snap.llmSystemPromptPrefix}Канал: ${channel}. ${stageLine}\n${snap.llmSystemPromptSuffix}${knowledgeBlock}`;
+      ? frame.openTopicsStageLine
+      : interpolateTemplate(frame.funnelStageLineTemplate, { stage });
+    const knowledgeBlock = knowledgeContext ? `${frame.knowledgeBlockIntro}${knowledgeContext}` : "";
+    return interpolateTemplate(frame.assembledTemplate, {
+      prefix: snap.llmSystemPromptPrefix,
+      channel,
+      stageLine,
+      suffix: snap.llmSystemPromptSuffix,
+      knowledgeBlock,
+    });
   }
 
-  private buildLlmSystemPromptStaticParts(p: ResolvedLlmPromptProfile): { prefix: string; suffix: string } {
+  private buildLlmSystemPromptStaticParts(
+    p: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): { prefix: string; suffix: string } {
+    const suf = this.dialogOf(bot).staticPromptSuffix;
     const company = p.companyName;
     const topic = p.topic;
     const forbidden = p.forbiddenTopics;
     const scopeFromFile = p.scopeText;
     const neverDo = p.neverDo ?? [];
     const primaryGoals = p.primaryGoals ?? [];
-    const lang = p.language ?? "русский";
+    const lang = p.language ?? suf.defaultLanguage;
 
     const prefixLines: string[] = [];
     if (p.persona) {
       prefixLines.push(p.persona);
     } else {
-      //TODO hardcode
-      prefixLines.push(`Ты — AI-менеджер компании ${company}.`);
+      prefixLines.push(interpolateTemplate(suf.defaultPersonaTemplate, { company }));
     }
     const prefix = `${prefixLines.join("\n")}\n`;
 
     const lines: string[] = [];
-    lines.push(`Основной язык ответов: ${lang}.`, "");
+    lines.push(interpolateTemplate(suf.mainLanguageLineTemplate, { lang }), "");
 
     if (primaryGoals.length > 0) {
-      lines.push("Цели в этом чате:", ...primaryGoals.map((g) => `- ${g}`), "");
-    } else if (p.openTopicsMode) {
       lines.push(
-        "Твоя цель: вести полезный и уважительный диалог по теме собеседника, без навязывания продукта.",
+        suf.primaryGoalsHeader,
+        ...primaryGoals.map((g) => `${suf.goalItemPrefix}${g}`),
         "",
       );
+    } else if (p.openTopicsMode) {
+      lines.push(suf.openTopicsPrimaryGoal, "");
     } else {
-      lines.push("Твоя цель: помогать клиентам в чате, консультировать и продавать по скриптам без давления.", "");
+      lines.push(suf.funnelPrimaryGoal, "");
     }
 
     if (p.servicesHighlight) {
-      lines.push("Фокус услуг и предложений:", p.servicesHighlight, "");
+      lines.push(suf.servicesHighlightHeader, p.servicesHighlight, "");
     }
 
     if (topic) {
-      lines.push(
-        "Рамка темы (только она, без общих отступлений):",
-        topic,
-        "",
-        "Вне темы: за 1–2 фразы вежливо откажи, верни к продукту или предложи менеджера; не советуй по медицине, юриспруденции, инвестициям и т.п. вне рамки продукта.",
-      );
+      lines.push(suf.topicHeader, topic, "", suf.topicOutOfScopeGuidance);
     }
 
     if (forbidden.length > 0) {
       lines.push(
         "",
-        "Не обсуждай и не развивай эти темы (даже по просьбе клиента):",
-        ...forbidden.map((f) => `- ${f}`),
+        suf.forbiddenSectionHeader,
+        ...forbidden.map((f) => `${suf.forbiddenItemPrefix}${f}`),
       );
     }
 
     if (neverDo.length > 0) {
-      lines.push("", "Категорически:", ...neverDo.map((f) => `- ${f}`));
+      lines.push("", suf.neverDoSectionHeader, ...neverDo.map((f) => `${suf.neverDoItemPrefix}${f}`));
     }
 
     if (scopeFromFile) {
-      lines.push(
-        "",
-        "База знаний подключена. Используй только факты из релевантных фрагментов ниже по запросу пользователя.",
-      );
+      lines.push("", suf.scopeConnectedIntro);
       if (p.strictKnowledgeMode) {
-        lines.push(
-          "- Если релевантные фрагменты не переданы или в них нет ответа по сути вопроса: скажи это коротко и по-человечески, предложи переформулировать или уточнить тему.",
-          "- Не выдумывай нормы, пункты, подпункты, таблицы и числовые значения.",
-        );
+        lines.push(...suf.strictKnowledgeBullets.map((b) => `- ${b}`));
       }
     }
 
     if (p.bookingAndContact) {
-      lines.push("", "Запись и контакты (не выдумывай данные):", p.bookingAndContact);
+      lines.push("", suf.bookingSectionHeader, p.bookingAndContact);
     }
 
     if (p.humanLikeMode) {
       lines.push(
         "",
-        "Режим «как живой человек» (тема и факты не ослабляй):",
-        "- Меняй формулировки, избегай шаблонных вступлений подряд; допустим разговорный тон, без канцелярита и «отчётных» списков ради списка.",
-        "- Не превращай каждый ответ в FAQ: 1–2 живых абзаца; покажи, что услышал запрос, без воды и лишних извинений.",
-        "- Смайлики по минимуму (один нейтральный или без них); без «рад видеть» в каждом сообщении.",
+        suf.humanLikeSectionHeader,
+        ...suf.humanLikeBullets.map((b) => `- ${b}`),
       );
     }
 
-    const styleLead = p.humanLikeMode
-      ? "- Пиши коротко и по-человечески: дружелюбно, без сухого отчёта."
-      : "- Пиши коротко, дружелюбно.";
+    const styleLead = p.humanLikeMode ? suf.styleLeadHumanLike : suf.styleLeadDefault;
 
     if (p.openTopicsMode) {
+      const ots = suf.openTopicsStyle;
       lines.push(
         "",
-        "Правила стиля:",
+        ots.sectionTitle,
         styleLead,
-        "- Развивай беседу по запросу пользователя; не уводи насильно к продаже или к одной нише.",
-        "- Не выдавай за факт то, чего не знаешь; при сложных вопросах (медицина, право, финансы) — общая информация и рекомендация обратиться к специалисту, без диагнозов и юридических заключений.",
-        p.humanLikeMode
-          ? "- В конце можно один уточняющий вопрос или предложение продолжить тему — по ситуации."
-          : "- Один ответ = несколько коротких абзацев по делу.",
+        ...ots.sharedBullets.map((b) => `- ${b}`),
+        `- ${p.humanLikeMode ? ots.lastBulletHumanLike : ots.lastBulletDefault}`,
       );
     } else {
+      const fs = suf.funnelStyle;
       lines.push(
         "",
-        "Правила стиля и продаж:",
+        fs.sectionTitle,
         styleLead,
-        "- Сначала уточняй потребность, потом предлагай решение.",
-        "- Не выдумывай цены, сроки и условия; если данных нет — скажи, что уточнит менеджер.",
-        p.humanLikeMode
-          ? "- В конце — один ясный следующий шаг или вопрос; не обязательно «официальное» закрытие абзаца."
-          : "- Один ответ = несколько коротких абзацев, в конце один конкретный следующий шаг.",
+        ...fs.sharedBullets.map((b) => `- ${b}`),
+        `- ${p.humanLikeMode ? fs.lastBulletHumanLike : fs.lastBulletDefault}`,
       );
     }
 
     if (p.additionalStyleRules?.length) {
       for (const rule of p.additionalStyleRules) {
-        lines.push(`- ${rule}`);
+        lines.push(`${suf.additionalStyleRulePrefix}${rule}`);
       }
     }
 
@@ -500,15 +508,16 @@ export class DialogService implements OnModuleInit {
 
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */
   private getLlmContextMessageLimit(): number {
-    const raw = process.env.LLM_CONTEXT_MESSAGES?.trim();
+    const cfg = this.getDialogConfig().llmContextMessages;
+    const raw = process.env[cfg.envVarName]?.trim();
     if (raw === undefined || raw === "") {
-      return 16;
+      return cfg.defaultLimit;
     }
     const n = Number(raw);
     if (!Number.isFinite(n)) {
-      return 16;
+      return cfg.defaultLimit;
     }
-    return Math.min(50, Math.max(2, Math.floor(n)));
+    return Math.min(cfg.max, Math.max(cfg.min, Math.floor(n)));
   }
 
   private buildKnowledgeChunks(scopeText: string, chunkSize: number, overlap: number): KnowledgeChunkRuntime[] {
@@ -540,10 +549,9 @@ export class DialogService implements OnModuleInit {
     if (targetEnd >= text.length) {
       return text.length;
     }
-    const breakpoints = ["\n\n", "\n", ". ", "; ", ", "];
-    for (const point of breakpoints) {
+    for (const point of this.chunkBreakpoints) {
       const idx = text.lastIndexOf(point, targetEnd);
-      if (idx > start + 200) {
+      if (idx > start + this.chunkMinAdvanceChars) {
         return idx + point.length;
       }
     }
@@ -554,8 +562,11 @@ export class DialogService implements OnModuleInit {
     userText: string,
     snap: DialogRuntimeSnapshot,
   ): Promise<{ context?: string; mode: "none" | "lexical" | "rag"; chunks: DialogDiagnosticChunk[] }> {
+    const rp = this.dialogOf(snap.bot).retrievalPresentation;
+    const defaultTopK = rp.defaultTopK;
+
     if (snap.bot.useRag && this.ragService.isInitialized()) {
-      const topK = snap.profile.retrievalTopK ?? 3;
+      const topK = snap.profile.retrievalTopK ?? defaultTopK;
       const results = await this.ragService.search(userText, topK);
       if (results.length === 0) {
         return { mode: "rag", chunks: [] };
@@ -563,8 +574,13 @@ export class DialogService implements OnModuleInit {
       return {
         mode: "rag",
         context: results
-          .map((r) => `[Релевантность: ${(r.score * 100).toFixed(1)}%]\n${r.text}`)
-          .join("\n\n---\n\n"),
+          .map((r) =>
+            interpolateTemplate(rp.ragScoreLineTemplate, {
+              scorePercent: (r.score * 100).toFixed(1),
+              text: r.text,
+            }),
+          )
+          .join(rp.chunkJoinSeparator),
         chunks: results.map((r) => ({ text: r.text, score: r.score })),
       };
     }
@@ -594,45 +610,31 @@ export class DialogService implements OnModuleInit {
       return { mode: "lexical", chunks: [] };
     }
 
-    const topK = snap.profile.retrievalTopK ?? 3;
+    const topK = snap.profile.retrievalTopK ?? defaultTopK;
     const top = scored.slice(0, topK);
     return {
       mode: "lexical",
       context: top
-        .map((x) => `[Фрагмент ${x.chunk.id}, совпадений: ${x.overlap}]\n${x.chunk.text}`)
-        .join("\n\n---\n\n"),
+        .map((x) =>
+          interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+            id: x.chunk.id,
+            overlap: x.overlap,
+            text: x.chunk.text,
+          }),
+        )
+        .join(rp.chunkJoinSeparator),
       chunks: top.map((x) => ({ id: x.chunk.id, text: x.chunk.text, overlap: x.overlap })),
     };
   }
 
   private tokenizeForRetrieval(text: string): string[] {
+    const minLen = this.getDialogConfig().tokenization.minTokenLength;
     const raw = text
       .toLowerCase()
       .replace(/ё/g, "е")
-      .split(/[^a-zа-я0-9.]+/i)
+      .split(this.tokenSplitRegex)
       .map((t) => t.trim())
-      .filter((t) => t.length >= 2);
-    const stopWords = new Set([
-      "и",
-      "в",
-      "на",
-      "по",
-      "с",
-      "для",
-      "к",
-      "о",
-      "об",
-      "от",
-      "до",
-      "или",
-      "что",
-      "как",
-      "какой",
-      "какие",
-      "это",
-      "пункт",
-      "подпункт",
-    ]);
-    return raw.filter((t) => !stopWords.has(t));
+      .filter((t) => t.length >= minLen);
+    return raw.filter((t) => !this.retrievalStopWords.has(t));
   }
 }
