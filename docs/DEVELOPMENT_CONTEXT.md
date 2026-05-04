@@ -1,8 +1,8 @@
 # Development Context
 
 ## Project
-- Name: `ai-manager`
-- Goal: AI-менеджер для консультаций и продаж в чатах (Telegram, WhatsApp, др.)
+- Name: `ai-bot`
+- Goal: Гибкий AI-bot для выполнения разносторонних задач в зависимости от установленной конфигурации через мессенджер или API.
 - Current stage: MVP core + **админ API** (JWT, CRUD конфигураций бота и профилей промпта в БД, тест диалога) — входящие сообщения по умолчанию через **BullMQ** (быстрый ACK вебхука); при `DIALOG_QUEUE_ENABLED=false` — синхронная обработка в вебхуке без Redis.
 
 ## Implemented
@@ -21,7 +21,7 @@
 - Добавлена idempotency-обработка входящих сообщений (Telegram/WhatsApp) по `messageId`.
 - Добавлена проверка подписи WhatsApp webhook (`X-Hub-Signature-256` + `WHATSAPP_APP_SECRET`).
 - Применена Prisma миграция `add_idempotency` для таблицы обработанных входящих сообщений.
-- Подключена локальная LLM через OpenAI-совместимый API (`POST {LLM_BASE_URL}/chat/completions`): **Ollama**, **LM Studio** и аналоги; `model` резолвится один раз на процесс из **`GET …/models`** (первая модель без подстроки `embed` в `id`). Переменные **`LLM_MODEL` / `LLM_API_KEY`** не используются — достаточно **`LLM_BASE_URL`** (и опционально `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`, …). При выключенной или недоступной LLM — короткие встроенные шаблоны в `DialogService`.
+- Подключена локальная LLM через  API (`POST {LLM_BASE_URL}/chat/completions`): **LM Studio** и аналоги; `model` резолвится один раз на процесс из **`GET …/models`** (первая модель без подстроки `embed` в `id`). Переменные **`LLM_MODEL` / `LLM_API_KEY`** не используются — достаточно **`LLM_BASE_URL`** (и опционально `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`, …). При выключенной или недоступной LLM — короткие встроенные шаблоны в `DialogService`.
 - Профили системного промпта (`PromptProfileModule`): JSON в `config/prompt-profiles/`; идентификатор профиля задаётся через сборку бота (см. ниже) или fallback `LLM_PROMPT_PROFILE`; лимит токенов на completion — **`LLM_MAX_TOKENS`** (если не задано в env — в `LlmService` по умолчанию **2048**, чтобы модели с `reasoning_content` не обрезались с пустым `content`).
 - **Конфигурации бота** (`BotConfigurationModule`, глобальный модуль): файл `config/configurations/<BOT_CONFIGURATION>.json` (переменная окружения `BOT_CONFIGURATION`, по умолчанию `default`). В сборке задаётся **`llmPromptProfile`** (имя файла без `.json` из `prompt-profiles/`) и опционально **`useRag`**. Примеры сборок: `daria-mokko`, `test-saas`, `test-fitness`, `open-topics`.
 - Расширенные поля профиля промпта: `persona`, `primaryGoals`, `servicesHighlight`, `neverDo`, `bookingAndContact`, `additionalStyleRules`, `language`, флаг **`humanLikeMode`** (более «живой» тон в системном промпте). Парсинг в `PromptProfileService`, сборка текста — `DialogService.buildSystemPrompt`.
@@ -74,7 +74,7 @@
 - Админ JWT: утечка refresh-токена, слабые секреты в production; тестовый диалог с **`useRag: true`** при несовпадении индекса `RagService` с выбранным профилем может давать нерепрезентативный retrieval (ограничение текущей реализации).
 
 ## Change Log
-- 2026-04-28: Документация LLM: `docs/README.md` — Ollama и LM Studio, только `LLM_BASE_URL`, выбор модели из `/models` без embedding, `LLM_MAX_TOKENS` / reasoning; таблица «типичные проблемы». `DEVELOPMENT_CONTEXT.md` — то же в «Implemented» и этот пункт changelog.
+- 2026-04-28: Документация LLM: `docs/README.md` — LM Studio, только `LLM_BASE_URL`, выбор модели из `/models` без embedding, `LLM_MAX_TOKENS` / reasoning; таблица «типичные проблемы». `DEVELOPMENT_CONTEXT.md` — то же в «Implemented» и этот пункт changelog.
 - 2026-04-28: Удалены sales-scripts: Prisma-модель и таблица `SalesScript`, REST `/admin/scripts`, поля `salesScriptsPath` / `salesScriptSlug` в типах и JSON сборок, файлы `scripts/**/sales-scripts.json`. `ConfigManagementService.resolveDialogResourceBundle` возвращает только `bot` + `profile`. `DialogService`: `composeSnapshot(profile, bot)`, встроенные шаблоны при отключённом LLM; основной поток не пишет `handoff_events`. Миграция `20260428120000_remove_sales_script`. Документация обновлена.
 - 2026-04-24: Админ-панель backend: `AdminModule` (CRUD `/admin/configurations`, `/admin/prompt-profiles`, `/admin/scripts`; `POST /admin/test-dialog`), `AuthModule` (JWT access/refresh, `AdminUser`, роли), `ConfigManagementModule` (разрешение бандла БД → файлы, опциональный кэш). Prisma: `AdminUser`, `Tenant`, `BotConfiguration`, `PromptProfile`, `SalesScript`; миграция `20260424120000_admin_and_config_management`. `DialogService`: `DialogRuntimeSnapshot`, `defaultSnapshot` для прод, `runDiagnosticTurn` для диагностики. `PromptProfileService`: `resolveFromPromptProfileJson`, `resolveProfileFromFilesystem`; в типах профиля — `scopeText`. `.env.example`: переменные JWT. После pull — `npx prisma migrate deploy`. *(Часть этого пункта отменена записью 2026-04-28: `SalesScript` и `/admin/scripts` удалены.)*
 - 2026-04-18: RAG (`RagModule`/`RagService`, `useRag` в конфиге бота); `DialogModule` импортирует `RagModule`. Режим консультанта по базе знаний: `strictKnowledgeMode`, разговорный обход без ложных отказов — паттерны в профиле или дефолты в `strict-knowledge-conversational.defaults.ts` (без `\b` для кириллицы; при обходе retrieval не вызывается). Смягчены тексты `noKnowledgeReply` / системного промпта при отсутствии фрагментов. Prisma: retry подключения к БД при старте; `npm run db:up` / `db:down`.
@@ -89,7 +89,7 @@
 - 2026-04-09: Учтены `LLM_CONTEXT_MESSAGES` и `LLM_TIMEOUT_MS` в `DialogService` / `LlmService`; в README — подсказки по ускорению LLM.
 - 2026-04-09: Логи обработки входящих сообщений Telegram/WhatsApp (этапы и тайминги) включены только в dev (`NODE_ENV=development`).
 - 2026-04-09: Рамка промпта вынесена из `.env` в сменные профили `config/prompt-profiles/*.json`, модуль `PromptProfileModule`, выбор `LLM_PROMPT_PROFILE`.
-- 2026-04-08: Добавлен `README.md` с инструкцией по запуску (Docker, Prisma, ngrok, Telegram/WhatsApp, Ollama).
+- 2026-04-08: Добавлен `README.md` с инструкцией по запуску (Docker, Prisma, ngrok, Telegram/WhatsApp).
 - 2026-04-07: Инициализированы `PROMPT_PLAN.md` и `DEVELOPMENT_CONTEXT.md`.
 - 2026-04-07: Зафиксирован целевой стек в черновике `TECH_STACK.md` и обновлён roadmap (файлы позже могли быть перенесены или удалены из репозитория).
 - 2026-04-08: Создан MVP-каркас приложения (NestJS, Docker Compose, Prisma schema, health endpoint).
@@ -101,5 +101,5 @@
 - 2026-04-08: `DialogService` использовал внешний конфиг `scripts/sales-scripts.json` (тексты и правила). *(Заменено встроенными шаблонами; JSON удалён — 2026-04-28.)*
 - 2026-04-08: Реализован handoff (конфиг-триггеры, статус `HANDED_OFF`, запись в `handoff_events`). *(Запись handoff из основного потока отключена с 2026-04-28.)*
 - 2026-04-08: Добавлены idempotency (messageId) и валидация подписи WhatsApp webhook; применена миграция `add_idempotency`.
-- 2026-04-08: Добавлен `LlmService` (Ollama OpenAI API) и генерация ответов в `DialogService` с fallback на шаблоны (тогда — JSON sales-scripts; с 2026-04-28 — встроенные строки в коде).
+- 2026-04-08: Добавлен `LlmService` (API) и генерация ответов в `DialogService` с fallback на шаблоны (тогда — JSON sales-scripts; с 2026-04-28 — встроенные строки в коде).
 - 2026-04-08: Расширен системный промпт (тема, запреты, файл scope) и опциональный `LLM_MAX_TOKENS`.
