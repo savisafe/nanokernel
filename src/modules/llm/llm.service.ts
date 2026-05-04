@@ -14,18 +14,14 @@ export class LlmService {
     return v === "true" || v === "1" || v === "yes";
   }
 
-  /**
-   * OpenAI-compatible chat (Ollama: http://localhost:11434/v1).
-   * Returns null if disabled, misconfigured, or request fails (caller uses script fallback).
-   */
   async complete(messages: LlmChatMessage[]): Promise<string | null> {
     if (!this.isEnabled()) {
       return null;
     }
 
-    const baseUrl = (process.env.LLM_BASE_URL ?? "http://localhost:11434/v1").replace(/\/$/, "");
-    const model = process.env.LLM_MODEL ?? "llama3";
-    const apiKey = process.env.LLM_API_KEY ?? "ollama";
+    const baseUrl = process.env.LLM_BASE_URL;
+    const model = process.env.LLM_MODEL;
+    const apiKey = process.env.LLM_API_KEY;
 
     const maxTokensRaw = process.env.LLM_MAX_TOKENS;
     const maxTokens =
