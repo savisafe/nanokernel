@@ -27,6 +27,8 @@ export interface DialogRuntimeSnapshot {
   llmSystemPromptPrefix: string;
   llmSystemPromptSuffix: string;
   knowledgeChunks: KnowledgeChunkRuntime[];
+  /** Пользовательская база (Telegram): не смешивать с глобальным RAG-индексом на старте */
+  disableRag?: boolean;
 }
 
 export interface DialogDiagnosticChunk {

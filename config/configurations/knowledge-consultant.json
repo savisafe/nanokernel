@@ -33,8 +33,7 @@
       "topK": 3,
       "chunkSize": 1400,
       "chunkOverlap": 200
-    },
-    "scopeFile": "knowledge-base/test1.txt"
+    }
   },
   "dialog": {
     "contextMessages": 12,

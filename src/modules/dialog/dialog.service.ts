@@ -1,5 +1,5 @@
 import { Injectable, OnModuleInit } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
+import { Prisma, User } from "@prisma/client";
 import { LlmChatMessage, LlmService } from "../llm/llm.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
@@ -65,6 +65,22 @@ export class DialogService implements OnModuleInit {
     };
   }
 
+  private resolveRuntimeSnapshotForUser(channel: ChannelType, user: User): DialogRuntimeSnapshot {
+    const base = this.defaultSnapshot;
+    const scope = user.knowledgeScopeText?.trim();
+    if (channel === "telegram" && scope && scope.length > 0) {
+      const profile: ResolvedLlmPromptProfile = {
+        ...base.profile,
+        scopeText: scope,
+      };
+      return {
+        ...this.composeSnapshot(profile, base.bot),
+        disableRag: true,
+      };
+    }
+    return base;
+  }
+
   /**
    * Один ход диалога с диагностикой (system prompt, retrieval).
    * Не используется вебхуками; для внутренней диагностики и тестов.
@@ -111,11 +127,41 @@ export class DialogService implements OnModuleInit {
   }
 
   async process(input: DialogInput): Promise<DialogOutput> {
-    const snap = this.defaultSnapshot;
-    const { conversation } = await this.getOrCreateConversation(
+    const { conversation, user } = await this.getOrCreateConversation(
       input.channel,
       input.externalUserId,
     );
+    const snap = this.resolveRuntimeSnapshotForUser(input.channel, user);
+
+    if (
+      input.channel === "telegram" &&
+      snap.profile.strictKnowledgeMode &&
+      !user.knowledgeScopeText?.trim()
+    ) {
+      const replyText = user.telegramKnowledgeAwaiting
+      // TODO: хардкод
+        ? "Загрузка базы не завершена: отправьте текст документа или команду /done."
+        : "Чтобы отвечать по вашей базе знаний, отправьте /start и пришлите текст документа (можно частями), затем команду /done.";
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "client",
+          text: input.text,
+        },
+      });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { stage: conversation.stage, status: "ACTIVE" },
+      });
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: replyText,
+        },
+      });
+      return { replyText, stage: conversation.stage };
+    }
 
     await this.prisma.message.create({
       data: {
@@ -577,24 +623,27 @@ export class DialogService implements OnModuleInit {
     const rp = this.effectiveFor(snap.bot).retrievalPresentation;
     const defaultTopK = rp.defaultTopK;
 
-    if (snap.bot.useRag && this.ragService.isInitialized()) {
+    const allowRag = snap.bot.useRag && this.ragService.isInitialized() && !snap.disableRag;
+    if (allowRag) {
       const topK = snap.profile.retrievalTopK ?? defaultTopK;
       const results = await this.ragService.search(userText, topK);
-      if (results.length === 0) {
+      if (results.length > 0) {
+        return {
+          mode: "rag",
+          context: results
+            .map((r) =>
+              interpolateTemplate(rp.ragScoreLineTemplate, {
+                scorePercent: (r.score * 100).toFixed(1),
+                text: r.text,
+              }),
+            )
+            .join(rp.chunkJoinSeparator),
+          chunks: results.map((r) => ({ text: r.text, score: r.score })),
+        };
+      }
+      if (snap.knowledgeChunks.length === 0) {
         return { mode: "rag", chunks: [] };
       }
-      return {
-        mode: "rag",
-        context: results
-          .map((r) =>
-            interpolateTemplate(rp.ragScoreLineTemplate, {
-              scorePercent: (r.score * 100).toFixed(1),
-              text: r.text,
-            }),
-          )
-          .join(rp.chunkJoinSeparator),
-        chunks: results.map((r) => ({ text: r.text, score: r.score })),
-      };
     }
 
     if (snap.knowledgeChunks.length === 0) {

@@ -19,6 +19,12 @@ model User {
   channel       String
   displayName   String?
   language      String         @default("ru")
+  /// Текст базы знаний для режима консультанта (Telegram: приходит от пользователя после /start)
+  knowledgeScopeText String?
+  /// Накопление черновика базы до команды /done
+  knowledgeDraft     String?
+  /// Ожидаем ввод базы знаний (после /start)
+  telegramKnowledgeAwaiting Boolean @default(false)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   conversations Conversation[]

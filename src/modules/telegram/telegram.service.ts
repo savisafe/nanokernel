@@ -1,24 +1,76 @@
-import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
+import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { performance } from "node:perf_hooks";
 import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
 import { DialogService } from "../dialog/dialog.service";
 import { DialogOutput } from "../dialog/dialog.types";
 import { IdempotencyService } from "../idempotency/idempotency.service";
+import { PrismaService } from "../prisma/prisma.service";
 import { isDevelopment } from "../shared/is-development";
 import {
   IncomingTelegramMessage,
   TelegramWebhookPayload,
 } from "./telegram.types";
 
+const TG_KNOWLEDGE_START_HINT =
+  "Привет! Отправьте текст вашей базы знаний — можно несколькими сообщениями. Когда закончите, отправьте /done.";
+const TG_KNOWLEDGE_DRAFT_ACK =
+  "Текст сохранён (учтены все последние сообщения). При необходимости пришлите ещё или отправьте /done.";
+/** Пауза после последнего фрагмента: Telegram режет длинную вставку на N сообщений подряд — без дебаунса было бы N ответов. */
+const TG_KNOWLEDGE_DRAFT_ACK_DEBOUNCE_MS = 1800;
+const TG_KNOWLEDGE_EMPTY_DONE =
+  "Текста пока нет. Отправьте хотя бы одно сообщение с текстом базы, затем снова /done.";
+const TG_KNOWLEDGE_SAVED = "База знаний сохранена. Задайте вопрос по этому материалу.";
+const TG_KNOWLEDGE_AWAITING_SLASH =
+  "Сейчас нужно отправить текст базы или завершить ввод командой /done.";
+
 @Injectable()
-export class TelegramService {
+export class TelegramService implements OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
+  private readonly draftAckTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
   constructor(
     private readonly dialogService: DialogService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly prisma: PrismaService,
     @Inject(forwardRef(() => DialogQueueService))
     private readonly dialogQueueService: DialogQueueService,
   ) {}
+
+  onModuleDestroy() {
+    for (const t of this.draftAckTimers.values()) {
+      clearTimeout(t);
+    }
+    this.draftAckTimers.clear();
+  }
+
+  private clearDebouncedDraftAck(chatId: number): void {
+    const existing = this.draftAckTimers.get(chatId);
+    if (existing) {
+      clearTimeout(existing);
+      this.draftAckTimers.delete(chatId);
+    }
+  }
+
+  /** Одно подтверждение после серии быстрых сообщений (вставка большого документа). */
+  private scheduleDebouncedDraftAck(chatId: number): void {
+    this.clearDebouncedDraftAck(chatId);
+    const timer = setTimeout(() => {
+      this.draftAckTimers.delete(chatId);
+      void this.sendDebouncedDraftAckIfStillAwaiting(chatId);
+    }, TG_KNOWLEDGE_DRAFT_ACK_DEBOUNCE_MS);
+    this.draftAckTimers.set(chatId, timer);
+  }
+
+  private async sendDebouncedDraftAckIfStillAwaiting(chatId: number): Promise<void> {
+    const externalId = String(chatId);
+    const user = await this.prisma.user.findFirst({
+      where: { channel: "telegram", externalId },
+    });
+    if (!user?.telegramKnowledgeAwaiting) {
+      return;
+    }
+    await this.sendMessage(chatId, TG_KNOWLEDGE_DRAFT_ACK);
+  }
 
   extractMessage(payload: TelegramWebhookPayload): IncomingTelegramMessage | null {
     const message = payload.message;
@@ -87,6 +139,11 @@ export class TelegramService {
     message: IncomingTelegramMessage,
     flowStarted?: number,
   ): Promise<void> {
+    const handledKnowledge = await this.tryHandleTelegramKnowledgeOnboarding(message);
+    if (handledKnowledge) {
+      return;
+    }
+
     const dev = isDevelopment();
     const flowT0 = flowStarted ?? (dev ? performance.now() : 0);
     const dialogStarted = dev ? performance.now() : 0;
@@ -117,6 +174,82 @@ export class TelegramService {
         `[Telegram] 3/3 ${sent ? "reply sent to bot" : "reply NOT sent (see errors above)"} chatId=${message.chatId} in ${sendMs}ms | total ${totalMs}ms (webhook → user sees message)`,
       );
     }
+  }
+
+  /**
+   * /start — инструкция и сброс черновика; в режиме ожидания накапливаем текст до /done.
+   * Не вызывает диалог/LLM.
+   */
+  private async tryHandleTelegramKnowledgeOnboarding(
+    message: IncomingTelegramMessage,
+  ): Promise<boolean> {
+    const externalId = String(message.chatId);
+    const raw = message.text.trim();
+    const firstToken = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
+
+    if (firstToken === "/start") {
+      this.clearDebouncedDraftAck(message.chatId);
+      await this.prisma.user.upsert({
+        where: {
+          channel_externalId: { channel: "telegram", externalId },
+        },
+        create: {
+          channel: "telegram",
+          externalId,
+          telegramKnowledgeAwaiting: true,
+          knowledgeDraft: null,
+          knowledgeScopeText: null,
+        },
+        update: {
+          telegramKnowledgeAwaiting: true,
+          knowledgeDraft: null,
+          knowledgeScopeText: null,
+        },
+      });
+      await this.sendMessage(message.chatId, TG_KNOWLEDGE_START_HINT);
+      return true;
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { channel: "telegram", externalId },
+    });
+    if (!user?.telegramKnowledgeAwaiting) {
+      return false;
+    }
+
+    const lower = raw.toLowerCase();
+    if (lower === "/done" || lower === "/готово") {
+      this.clearDebouncedDraftAck(message.chatId);
+      const draft = (user.knowledgeDraft ?? "").trim();
+      if (!draft) {
+        await this.sendMessage(message.chatId, TG_KNOWLEDGE_EMPTY_DONE);
+        return true;
+      }
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          knowledgeScopeText: draft,
+          knowledgeDraft: null,
+          telegramKnowledgeAwaiting: false,
+        },
+      });
+      await this.sendMessage(message.chatId, TG_KNOWLEDGE_SAVED);
+      return true;
+    }
+
+    if (raw.startsWith("/")) {
+      await this.sendMessage(message.chatId, TG_KNOWLEDGE_AWAITING_SLASH);
+      return true;
+    }
+
+    const sep = user.knowledgeDraft && user.knowledgeDraft.length > 0 ? "\n\n" : "";
+    const nextDraft = (user.knowledgeDraft ?? "") + sep + raw;
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { knowledgeDraft: nextDraft },
+    });
+    this.scheduleDebouncedDraftAck(message.chatId);
+    return true;
   }
 
   async sendMessage(chatId: number, text: string): Promise<boolean> {
