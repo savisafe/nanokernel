@@ -11,8 +11,15 @@ import {
   TelegramWebhookPayload,
 } from "./telegram.types";
 
-const TG_KNOWLEDGE_START_HINT =
-  "Привет! Отправьте текст вашей базы знаний — можно несколькими сообщениями. Когда закончите, отправьте /done.";
+// TODO: хардкод
+const TG_WELCOME_START = [
+  "Привет! Помогаю находить ответы в ваших регламентах и документах: только факты из загруженного текста — без домыслов и общих фраз.",
+  "",
+  "Как работать: /new → вставьте текст базы (Telegram может разбить длинную вставку на части — это нормально) → /done. После этого задавайте вопросы — разберём пункты строго по вашему материалу.",
+].join("\n");
+
+const TG_NEW_DOC_HINT =
+  "Режим нового документа. Отправьте текст базы знаний — можно несколькими сообщениями. Когда закончите, отправьте /done.";
 const TG_KNOWLEDGE_DRAFT_ACK =
   "Текст сохранён (учтены все последние сообщения). При необходимости пришлите ещё или отправьте /done.";
 /** Пауза после последнего фрагмента: Telegram режет длинную вставку на N сообщений подряд — без дебаунса было бы N ответов. */
@@ -21,7 +28,7 @@ const TG_KNOWLEDGE_EMPTY_DONE =
   "Текста пока нет. Отправьте хотя бы одно сообщение с текстом базы, затем снова /done.";
 const TG_KNOWLEDGE_SAVED = "База знаний сохранена. Задайте вопрос по этому материалу.";
 const TG_KNOWLEDGE_AWAITING_SLASH =
-  "Сейчас нужно отправить текст базы или завершить ввод командой /done.";
+  "Сейчас пришлите текст базы или завершите ввод командой /done. Другие команды с «/» здесь недоступны.";
 
 @Injectable()
 export class TelegramService implements OnModuleDestroy {
@@ -35,6 +42,13 @@ export class TelegramService implements OnModuleDestroy {
     @Inject(forwardRef(() => DialogQueueService))
     private readonly dialogQueueService: DialogQueueService,
   ) {}
+
+  /** Первый токен как команда: нижний регистр, без @BotName (группы). */
+  private static telegramCommandToken(rawTrimmed: string): string {
+    const first = rawTrimmed.split(/\s+/)[0] ?? "";
+    const base = first.includes("@") ? (first.split("@")[0] ?? first) : first;
+    return base.toLowerCase();
+  }
 
   onModuleDestroy() {
     for (const t of this.draftAckTimers.values()) {
@@ -177,7 +191,8 @@ export class TelegramService implements OnModuleDestroy {
   }
 
   /**
-   * /start — инструкция и сброс черновика; в режиме ожидания накапливаем текст до /done.
+   * /start — приветствие (без сброса базы).
+   * /new — сброс черновика и режим ожидания текста до /done.
    * Не вызывает диалог/LLM.
    */
   private async tryHandleTelegramKnowledgeOnboarding(
@@ -185,9 +200,14 @@ export class TelegramService implements OnModuleDestroy {
   ): Promise<boolean> {
     const externalId = String(message.chatId);
     const raw = message.text.trim();
-    const firstToken = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
+    const cmd = TelegramService.telegramCommandToken(raw);
 
-    if (firstToken === "/start") {
+    if (cmd === "/start") {
+      await this.sendMessage(message.chatId, TG_WELCOME_START);
+      return true;
+    }
+
+    if (cmd === "/new") {
       this.clearDebouncedDraftAck(message.chatId);
       await this.prisma.user.upsert({
         where: {
@@ -206,7 +226,7 @@ export class TelegramService implements OnModuleDestroy {
           knowledgeScopeText: null,
         },
       });
-      await this.sendMessage(message.chatId, TG_KNOWLEDGE_START_HINT);
+      await this.sendMessage(message.chatId, TG_NEW_DOC_HINT);
       return true;
     }
 
@@ -217,8 +237,7 @@ export class TelegramService implements OnModuleDestroy {
       return false;
     }
 
-    const lower = raw.toLowerCase();
-    if (lower === "/done" || lower === "/готово") {
+    if (cmd === "/done" || cmd === "/готово") {
       this.clearDebouncedDraftAck(message.chatId);
       const draft = (user.knowledgeDraft ?? "").trim();
       if (!draft) {

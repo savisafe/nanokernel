@@ -139,9 +139,9 @@ export class DialogService implements OnModuleInit {
       !user.knowledgeScopeText?.trim()
     ) {
       const replyText = user.telegramKnowledgeAwaiting
-      // TODO: хардкод
+        // TODO: хардкод
         ? "Загрузка базы не завершена: отправьте текст документа или команду /done."
-        : "Чтобы отвечать по вашей базе знаний, отправьте /start и пришлите текст документа (можно частями), затем команду /done.";
+        : "Чтобы отвечать по вашей базе знаний, отправьте /new и пришлите текст документа (можно частями), затем команду /done.";
       await this.prisma.message.create({
         data: {
           conversationId: conversation.id,
