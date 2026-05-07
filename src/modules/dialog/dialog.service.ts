@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import { Prisma, User } from "@prisma/client";
 import { LlmChatMessage, LlmService } from "../llm/llm.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -35,6 +36,7 @@ export class DialogService implements OnModuleInit {
   private readonly retrievalStopWords: Set<string>;
   private readonly chunkBreakpoints: readonly string[];
   private readonly chunkMinAdvanceChars: number;
+  private readonly knowledgeChunksCache = new Map<string, KnowledgeChunkRuntime[]>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -83,8 +85,13 @@ export class DialogService implements OnModuleInit {
         ...base.profile,
         scopeText: scope,
       };
+      const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, base.bot);
       return {
-        ...this.composeSnapshot(profile, base.bot),
+        profile,
+        bot: base.bot,
+        llmSystemPromptPrefix: prefix,
+        llmSystemPromptSuffix: suffix,
+        knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profile, base.bot),
         disableRag: true,
       };
     }
@@ -417,13 +424,40 @@ export class DialogService implements OnModuleInit {
     if (!p.scopeText || p.scopeText.trim().length === 0) {
       return [];
     }
+    return this.getCachedKnowledgeChunksForScope(p.scopeText, p, bot);
+  }
+
+  private getCachedKnowledgeChunksForScope(
+    scopeText: string,
+    p: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
+    const scope = scopeText.trim();
+    if (!scope) {
+      return [];
+    }
     const defaults = this.effectiveFor(bot).chunkDefaults;
     const chunkSize = p.retrievalChunkSize ?? defaults.chunkSize;
     const overlap = Math.min(
       p.retrievalChunkOverlap ?? defaults.overlap,
       Math.max(0, chunkSize - defaults.overlapClampSubtract),
     );
-    return this.buildKnowledgeChunks(p.scopeText, chunkSize, overlap);
+    const scopeHash = createHash("sha256").update(scope).digest("hex");
+    const cacheKey = `${bot.id}:${chunkSize}:${overlap}:${scopeHash}`;
+    const cached = this.knowledgeChunksCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const built = this.buildKnowledgeChunks(scope, chunkSize, overlap);
+    this.knowledgeChunksCache.set(cacheKey, built);
+    const maxCacheEntries = 100;
+    if (this.knowledgeChunksCache.size > maxCacheEntries) {
+      const firstKey = this.knowledgeChunksCache.keys().next().value;
+      if (firstKey) {
+        this.knowledgeChunksCache.delete(firstKey);
+      }
+    }
+    return built;
   }
 
   private buildSystemPrompt(

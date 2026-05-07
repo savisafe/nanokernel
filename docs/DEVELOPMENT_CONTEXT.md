@@ -39,6 +39,7 @@
 - Режим **строгой базы знаний** в профиле промпта: `strictKnowledgeMode`, опциональный `scopeFile` (длинный текст в контекст LLM / индексация), `noKnowledgeReply` при отсутствии релевантных фрагментов.
 - В `DialogService` добавлен fallback для **глобальных запросов о документе** в strict-режиме: если лексический retrieval не нашёл пересечений токенов, но запрос похож на «перескажи/суммируй/о чем документ/что за документ/расскажи про документ», в контекст LLM подставляются стартовые чанки загруженной базы (`knowledgeScopeText`) вместо мгновенного `noKnowledgeReply`.
 - Оптимизация токенов в retrieval-подаче: `DialogService.retrieveKnowledgeContextDetailed` теперь ограничивает размер контекста знаний перед вставкой в system prompt (`retrievalPresentation.maxContextChars`) и подрезает отдельные фрагменты (`retrievalPresentation.maxChunkChars`), чтобы уменьшить prompt-size без отключения retrieval.
+- Добавлен in-memory кеш парсинга базы знаний в `DialogService`: чанки `knowledgeScopeText` переиспользуются по ключу (`bot.id` + chunk params + sha256 текста), чтобы не пересобирать токенизацию/чанкинг на каждый входящий Telegram message в strict knowledge режиме.
 - **Разговорный обход** strict-режима (`strictKnowledgeConversationalBypass` во вложенном **`promptProfile`** или в `config/prompt-profiles/*.json`): список regex-строк (флаг `u` при компиляции в `PromptProfileService`), `maxMessageLength`, опционально `strictKnowledgeConversationalPromptAddendum` — строки к system prompt. Дефолтные паттерны и текст доп. блока — `src/modules/prompt-profile/strict-knowledge-conversational.defaults.ts`. Важно: в JS **не использовать `\b` в паттернах под кириллицу** (word boundary только для ASCII-«слов»); при совпадении обхода поиск по БЗ для этого сообщения **не** вызывается, чтобы случайные чанки не тянули ответ «нет в базе».
 - Скрипты инфраструктуры: `npm run db:up` / `db:down` — `docker compose` для PostgreSQL и Redis. Подключение Prisma при старте: повторные попытки с паузой (`PRISMA_CONNECT_MAX_ATTEMPTS`, `PRISMA_CONNECT_RETRY_DELAY_MS`), чтобы пережить медленный старт контейнера.
 - **Админ API снят**: каталоги `src/modules/admin/` и `src/modules/auth/` удалены; в **`AppModule`** нет `AdminModule` / `AuthModule`. Эндпоинты вида `/admin/*` и JWT (**`POST /admin/auth/login`**, **`POST /admin/auth/refresh`**) не обслуживаются.
@@ -48,7 +49,7 @@
 
 ## In Progress
 - Уточнение эскалации к живому менеджеру и уведомлений (без JSON-триггеров в репозитории).
-- Этап 1 из `docs/TODO.md`: в работе пункты по экономии токенов (остался кеш/переиспользование парсинга), ingestion документов и напоминаниям.
+- Этап 1 из `docs/TODO.md`: пп.1-2 закрыты; в работе ingestion документов и напоминания.
 
 ## Next
 1. Настроить Telegram/WhatsApp production webhook URLs.
@@ -80,6 +81,7 @@
 - Нативные модули (**`better-sqlite3`**) и несовпадение **NODE_MODULE_VERSION** после смены Node: `npm rebuild better-sqlite3` или переустановка `node_modules`.
 
 ## Change Log
+- 2026-05-08: Этап 1 (продолжение): добавлен кеш `knowledgeChunks` в `DialogService` для переиспользования парсинга пользовательской базы знаний (`knowledgeScopeText`). При telegram strict-потоке runtime snapshot теперь берет чанки из кеша по хэшу текста и параметрам чанкинга; добавлен soft-limit кеша в памяти.
 - 2026-05-08: Этап 1 (продолжение): снижён объём knowledge-контекста в LLM prompt. В `dialog.retrievalPresentation` добавлены лимиты `maxContextChars` / `maxChunkChars`; `DialogService` теперь обрезает длинные retrieval-фрагменты и ограничивает суммарный размер блока знаний перед `buildSystemPrompt`. Для `knowledge-consultant` лимиты добавлены в `config/configurations/knowledge-consultant.json`.
 - 2026-05-08: Этап 1 (частично): вынесены тексты Telegram-онбординга из `TelegramService`/`DialogService` в `dialog.telegramKnowledgeOnboarding` (`dialog.config.types.ts`, `dialog-effective.defaults.ts`, `resolveEffectiveDialog`). Добавлен runtime-accessor `DialogService.getTelegramKnowledgeOnboarding()`, обновлён `knowledge-consultant.json`. Для legacy-конфигов добавлен fallback на дефолтные onboarding-тексты.
 - 2026-05-08: `DialogService` — улучшено понимание «вводных» запросов к загруженному документу после `/done`. Добавлен детектор глобального intent (в т.ч. `пересказ`, `суммируй`, `кратко`, `расскажи`, `опиши`, `о чем документ`, `что за документ`, `summary/overview/tl;dr`) и эвристика `intent + существительное документа` (`документ/текст/файл/база/материал`). Если обычный lexical retrieval пустой, берутся первые чанки `knowledgeScopeText`, чтобы бот мог дать общий пересказ вместо fallback «не нашлось подходящего фрагмента».
