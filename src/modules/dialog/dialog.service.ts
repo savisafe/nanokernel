@@ -23,6 +23,12 @@ import {
 
 @Injectable()
 export class DialogService implements OnModuleInit {
+  private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
+    /\b(пересказ|перескажи|суммарно|суммируй|кратко|резюме|выжимк|расскажи|опиши)\b/i,
+    /\b(summary|summarize|overview|tl;dr)\b/i,
+    /\b(о\s+ч[её]м\s+документ)\b/i,
+    /\b(что\s+за\s+документ)\b/i,
+  ];
   private defaultSnapshot!: DialogRuntimeSnapshot;
   private readonly effective: EffectiveDialogRuntime;
   private readonly tokenSplitRegex: RegExp;
@@ -668,6 +674,25 @@ export class DialogService implements OnModuleInit {
       .sort((a, b) => b.overlap - a.overlap || a.chunk.id - b.chunk.id);
 
     if (scored.length === 0) {
+      if (this.isGlobalKnowledgeRequest(userText)) {
+        const topK = snap.profile.retrievalTopK ?? defaultTopK;
+        const top = snap.knowledgeChunks.slice(0, topK);
+        if (top.length > 0) {
+          return {
+            mode: "lexical",
+            context: top
+              .map((x) =>
+                interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+                  id: x.id,
+                  overlap: 0,
+                  text: x.text,
+                }),
+              )
+              .join(rp.chunkJoinSeparator),
+            chunks: top.map((x) => ({ id: x.id, text: x.text, overlap: 0 })),
+          };
+        }
+      }
       return { mode: "lexical", chunks: [] };
     }
 
@@ -686,6 +711,23 @@ export class DialogService implements OnModuleInit {
         .join(rp.chunkJoinSeparator),
       chunks: top.map((x) => ({ id: x.chunk.id, text: x.chunk.text, overlap: x.overlap })),
     };
+  }
+
+  private isGlobalKnowledgeRequest(userText: string): boolean {
+    const text = userText.trim().toLowerCase().replace(/ё/g, "е");
+    if (!text) {
+      return false;
+    }
+    if (DialogService.GLOBAL_KNOWLEDGE_REQUEST_PATTERNS.some((pattern) => pattern.test(text))) {
+      return true;
+    }
+    const hasDocNoun =
+      /\b(документ|документа|документе|текст|файл|база|базу|материал|материалу)\b/i.test(text);
+    const hasGlobalIntentVerb =
+      /\b(расскажи|опиши|объясни|суммируй|кратко|краткий|перескажи|summary|overview|tl;dr|что\s+за|о\s+чем)\b/i.test(
+        text,
+      );
+    return hasDocNoun && hasGlobalIntentVerb;
   }
 
   private tokenizeForRetrieval(text: string): string[] {
