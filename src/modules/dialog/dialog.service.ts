@@ -55,6 +55,10 @@ export class DialogService implements OnModuleInit {
     this.defaultSnapshot = this.composeSnapshot(this.promptProfile.getProfile(), this.botConfiguration.get());
   }
 
+  getTelegramKnowledgeOnboarding() {
+    return this.effective.telegramKnowledgeOnboarding;
+  }
+
   /**
    * Сборка снимка для админского теста или кастомного рантайма.
    * Прод-путь использует defaultSnapshot из env и файлов профиля/сборки на старте.
@@ -144,10 +148,10 @@ export class DialogService implements OnModuleInit {
       snap.profile.strictKnowledgeMode &&
       !user.knowledgeScopeText?.trim()
     ) {
+      const onboarding = this.effectiveFor(snap.bot).telegramKnowledgeOnboarding;
       const replyText = user.telegramKnowledgeAwaiting
-        // TODO: хардкод
-        ? "Загрузка базы не завершена: отправьте текст документа или команду /done."
-        : "Чтобы отвечать по вашей базе знаний, отправьте /new и пришлите текст документа (можно частями), затем команду /done.";
+        ? onboarding.strictNoScopeAwaitingDraft
+        : onboarding.strictNoScopeNeedNew;
       await this.prisma.message.create({
         data: {
           conversationId: conversation.id,
@@ -628,22 +632,27 @@ export class DialogService implements OnModuleInit {
   ): Promise<{ context?: string; mode: "none" | "lexical" | "rag"; chunks: DialogDiagnosticChunk[] }> {
     const rp = this.effectiveFor(snap.bot).retrievalPresentation;
     const defaultTopK = rp.defaultTopK;
+    const maxContextChars = rp.maxContextChars ?? 5000;
+    const maxChunkChars = rp.maxChunkChars ?? 1400;
 
     const allowRag = snap.bot.useRag && this.ragService.isInitialized() && !snap.disableRag;
     if (allowRag) {
       const topK = snap.profile.retrievalTopK ?? defaultTopK;
       const results = await this.ragService.search(userText, topK);
       if (results.length > 0) {
+        const formatted = this.formatRetrievedContext(
+          results.map((r) =>
+            interpolateTemplate(rp.ragScoreLineTemplate, {
+              scorePercent: (r.score * 100).toFixed(1),
+              text: this.trimRetrievedChunkText(r.text, maxChunkChars),
+            }),
+          ),
+          rp.chunkJoinSeparator,
+          maxContextChars,
+        );
         return {
           mode: "rag",
-          context: results
-            .map((r) =>
-              interpolateTemplate(rp.ragScoreLineTemplate, {
-                scorePercent: (r.score * 100).toFixed(1),
-                text: r.text,
-              }),
-            )
-            .join(rp.chunkJoinSeparator),
+          context: formatted,
           chunks: results.map((r) => ({ text: r.text, score: r.score })),
         };
       }
@@ -678,17 +687,20 @@ export class DialogService implements OnModuleInit {
         const topK = snap.profile.retrievalTopK ?? defaultTopK;
         const top = snap.knowledgeChunks.slice(0, topK);
         if (top.length > 0) {
+          const formatted = this.formatRetrievedContext(
+            top.map((x) =>
+              interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+                id: x.id,
+                overlap: 0,
+                text: this.trimRetrievedChunkText(x.text, maxChunkChars),
+              }),
+            ),
+            rp.chunkJoinSeparator,
+            maxContextChars,
+          );
           return {
             mode: "lexical",
-            context: top
-              .map((x) =>
-                interpolateTemplate(rp.lexicalFragmentLineTemplate, {
-                  id: x.id,
-                  overlap: 0,
-                  text: x.text,
-                }),
-              )
-              .join(rp.chunkJoinSeparator),
+            context: formatted,
             chunks: top.map((x) => ({ id: x.id, text: x.text, overlap: 0 })),
           };
         }
@@ -698,19 +710,58 @@ export class DialogService implements OnModuleInit {
 
     const topK = snap.profile.retrievalTopK ?? defaultTopK;
     const top = scored.slice(0, topK);
+    const formatted = this.formatRetrievedContext(
+      top.map((x) =>
+        interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+          id: x.chunk.id,
+          overlap: x.overlap,
+          text: this.trimRetrievedChunkText(x.chunk.text, maxChunkChars),
+        }),
+      ),
+      rp.chunkJoinSeparator,
+      maxContextChars,
+    );
     return {
       mode: "lexical",
-      context: top
-        .map((x) =>
-          interpolateTemplate(rp.lexicalFragmentLineTemplate, {
-            id: x.chunk.id,
-            overlap: x.overlap,
-            text: x.chunk.text,
-          }),
-        )
-        .join(rp.chunkJoinSeparator),
+      context: formatted,
       chunks: top.map((x) => ({ id: x.chunk.id, text: x.chunk.text, overlap: x.overlap })),
     };
+  }
+
+  private trimRetrievedChunkText(text: string, maxChunkChars: number): string {
+    const normalized = text.trim();
+    if (normalized.length <= maxChunkChars) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, maxChunkChars - 1)).trimEnd()}…`;
+  }
+
+  private formatRetrievedContext(
+    fragments: string[],
+    separator: string,
+    maxContextChars: number,
+  ): string | undefined {
+    if (fragments.length === 0) {
+      return undefined;
+    }
+    const parts: string[] = [];
+    let size = 0;
+    for (const fragment of fragments) {
+      const piece = fragment.trim();
+      if (!piece) {
+        continue;
+      }
+      const extra = (parts.length > 0 ? separator.length : 0) + piece.length;
+      if (size + extra > maxContextChars) {
+        break;
+      }
+      parts.push(piece);
+      size += extra;
+    }
+    if (parts.length === 0) {
+      return undefined;
+    }
+    return parts.join(separator);
   }
 
   private isGlobalKnowledgeRequest(userText: string): boolean {

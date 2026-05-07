@@ -30,6 +30,8 @@ export interface DialogRetrievalPresentation {
   ragScoreLineTemplate: string;
   lexicalFragmentLineTemplate: string;
   chunkJoinSeparator: string;
+  maxContextChars?: number;
+  maxChunkChars?: number;
 }
 
 export interface DialogTokenization {
@@ -37,6 +39,18 @@ export interface DialogTokenization {
   splitPattern: string;
   splitFlags: string;
   stopWords: string[];
+}
+
+export interface DialogTelegramKnowledgeOnboarding {
+  welcomeStart: string;
+  newDocHint: string;
+  draftSavedAck: string;
+  draftAckDebounceMs: number;
+  emptyDone: string;
+  saved: string;
+  awaitingSlash: string;
+  strictNoScopeAwaitingDraft: string;
+  strictNoScopeNeedNew: string;
 }
 
 export interface DialogSystemPromptFrame {
@@ -89,6 +103,7 @@ export interface DialogServiceConfig {
   chunkBoundaries: DialogChunkBoundaries;
   retrievalPresentation: DialogRetrievalPresentation;
   tokenization: DialogTokenization;
+  telegramKnowledgeOnboarding: DialogTelegramKnowledgeOnboarding;
   systemPromptFrame: DialogSystemPromptFrame;
   staticPromptSuffix: DialogStaticPromptSuffix;
 }
@@ -103,6 +118,7 @@ export interface DialogConfigMinimalFile {
   chunkBoundaries?: Partial<DialogChunkBoundaries>;
   retrievalPresentation?: Partial<DialogRetrievalPresentation>;
   tokenization?: Partial<DialogTokenization>;
+  telegramKnowledgeOnboarding?: Partial<DialogTelegramKnowledgeOnboarding>;
 }
 
 export type DialogConfigFileJson = DialogServiceConfig | DialogConfigMinimalFile;

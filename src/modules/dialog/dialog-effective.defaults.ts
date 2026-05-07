@@ -42,6 +42,8 @@ export const DIALOG_SUBSYSTEM_DEFAULTS: Omit<DialogServiceConfig, "systemPromptF
     ragScoreLineTemplate: "[Релевантность: {scorePercent}%]\n{text}",
     lexicalFragmentLineTemplate: "[Фрагмент {id}, совпадений: {overlap}]\n{text}",
     chunkJoinSeparator: "\n\n---\n\n",
+    maxContextChars: 5000,
+    maxChunkChars: 1400,
   },
   tokenization: {
     minTokenLength: 2,
@@ -68,5 +70,26 @@ export const DIALOG_SUBSYSTEM_DEFAULTS: Omit<DialogServiceConfig, "systemPromptF
       "пункт",
       "подпункт",
     ],
+  },
+  telegramKnowledgeOnboarding: {
+    welcomeStart: [
+      "Привет! Помогаю находить ответы в ваших регламентах и документах: только факты из загруженного текста - без домыслов и общих фраз.",
+      "",
+      "Как работать: /new -> вставьте текст базы (Telegram может разбить длинную вставку на части - это нормально) -> /done. После этого задавайте вопросы - разберем пункты строго по вашему материалу.",
+    ].join("\n"),
+    newDocHint:
+      "Режим нового документа. Отправьте текст базы знаний - можно несколькими сообщениями. Когда закончите, отправьте /done.",
+    draftSavedAck:
+      "Текст сохранен (учтены все последние сообщения). При необходимости пришлите еще или отправьте /done.",
+    draftAckDebounceMs: 1800,
+    emptyDone:
+      "Текста пока нет. Отправьте хотя бы одно сообщение с текстом базы, затем снова /done.",
+    saved: "База знаний сохранена. Задайте вопрос по этому материалу.",
+    awaitingSlash:
+      "Сейчас пришлите текст базы или завершите ввод командой /done. Другие команды с '/' здесь недоступны.",
+    strictNoScopeAwaitingDraft:
+      "Загрузка базы не завершена: отправьте текст документа или команду /done.",
+    strictNoScopeNeedNew:
+      "Чтобы отвечать по вашей базе знаний, отправьте /new и пришлите текст документа (можно частями), затем команду /done.",
   },
 };

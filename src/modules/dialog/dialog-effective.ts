@@ -39,6 +39,10 @@ export function resolveEffectiveDialog(bot: ResolvedBotConfiguration): Effective
       systemPromptFrame,
       staticPromptSuffix,
       ...subsystem,
+      telegramKnowledgeOnboarding: {
+        ...DIALOG_SUBSYSTEM_DEFAULTS.telegramKnowledgeOnboarding,
+        ...subsystem.telegramKnowledgeOnboarding,
+      },
     };
   }
 
@@ -76,6 +80,12 @@ export function resolveEffectiveDialog(bot: ResolvedBotConfiguration): Effective
     if (m.tokenization.stopWords) {
       base.tokenization.stopWords = [...m.tokenization.stopWords];
     }
+  }
+  if (m.telegramKnowledgeOnboarding) {
+    base.telegramKnowledgeOnboarding = {
+      ...base.telegramKnowledgeOnboarding,
+      ...m.telegramKnowledgeOnboarding,
+    };
   }
 
   return {

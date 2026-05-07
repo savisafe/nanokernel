@@ -11,25 +11,6 @@ import {
   TelegramWebhookPayload,
 } from "./telegram.types";
 
-// TODO: хардкод
-const TG_WELCOME_START = [
-  "Привет! Помогаю находить ответы в ваших регламентах и документах: только факты из загруженного текста — без домыслов и общих фраз.",
-  "",
-  "Как работать: /new → вставьте текст базы (Telegram может разбить длинную вставку на части — это нормально) → /done. После этого задавайте вопросы — разберём пункты строго по вашему материалу.",
-].join("\n");
-
-const TG_NEW_DOC_HINT =
-  "Режим нового документа. Отправьте текст базы знаний — можно несколькими сообщениями. Когда закончите, отправьте /done.";
-const TG_KNOWLEDGE_DRAFT_ACK =
-  "Текст сохранён (учтены все последние сообщения). При необходимости пришлите ещё или отправьте /done.";
-/** Пауза после последнего фрагмента: Telegram режет длинную вставку на N сообщений подряд — без дебаунса было бы N ответов. */
-const TG_KNOWLEDGE_DRAFT_ACK_DEBOUNCE_MS = 1800;
-const TG_KNOWLEDGE_EMPTY_DONE =
-  "Текста пока нет. Отправьте хотя бы одно сообщение с текстом базы, затем снова /done.";
-const TG_KNOWLEDGE_SAVED = "База знаний сохранена. Задайте вопрос по этому материалу.";
-const TG_KNOWLEDGE_AWAITING_SLASH =
-  "Сейчас пришлите текст базы или завершите ввод командой /done. Другие команды с «/» здесь недоступны.";
-
 @Injectable()
 export class TelegramService implements OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
@@ -67,11 +48,12 @@ export class TelegramService implements OnModuleDestroy {
 
   /** Одно подтверждение после серии быстрых сообщений (вставка большого документа). */
   private scheduleDebouncedDraftAck(chatId: number): void {
+    const onboarding = this.dialogService.getTelegramKnowledgeOnboarding();
     this.clearDebouncedDraftAck(chatId);
     const timer = setTimeout(() => {
       this.draftAckTimers.delete(chatId);
       void this.sendDebouncedDraftAckIfStillAwaiting(chatId);
-    }, TG_KNOWLEDGE_DRAFT_ACK_DEBOUNCE_MS);
+    }, onboarding.draftAckDebounceMs);
     this.draftAckTimers.set(chatId, timer);
   }
 
@@ -83,7 +65,7 @@ export class TelegramService implements OnModuleDestroy {
     if (!user?.telegramKnowledgeAwaiting) {
       return;
     }
-    await this.sendMessage(chatId, TG_KNOWLEDGE_DRAFT_ACK);
+    await this.sendMessage(chatId, this.dialogService.getTelegramKnowledgeOnboarding().draftSavedAck);
   }
 
   extractMessage(payload: TelegramWebhookPayload): IncomingTelegramMessage | null {
@@ -201,9 +183,10 @@ export class TelegramService implements OnModuleDestroy {
     const externalId = String(message.chatId);
     const raw = message.text.trim();
     const cmd = TelegramService.telegramCommandToken(raw);
+    const onboarding = this.dialogService.getTelegramKnowledgeOnboarding();
 
     if (cmd === "/start") {
-      await this.sendMessage(message.chatId, TG_WELCOME_START);
+      await this.sendMessage(message.chatId, onboarding.welcomeStart);
       return true;
     }
 
@@ -226,7 +209,7 @@ export class TelegramService implements OnModuleDestroy {
           knowledgeScopeText: null,
         },
       });
-      await this.sendMessage(message.chatId, TG_NEW_DOC_HINT);
+      await this.sendMessage(message.chatId, onboarding.newDocHint);
       return true;
     }
 
@@ -241,7 +224,7 @@ export class TelegramService implements OnModuleDestroy {
       this.clearDebouncedDraftAck(message.chatId);
       const draft = (user.knowledgeDraft ?? "").trim();
       if (!draft) {
-        await this.sendMessage(message.chatId, TG_KNOWLEDGE_EMPTY_DONE);
+        await this.sendMessage(message.chatId, onboarding.emptyDone);
         return true;
       }
       await this.prisma.user.update({
@@ -252,12 +235,12 @@ export class TelegramService implements OnModuleDestroy {
           telegramKnowledgeAwaiting: false,
         },
       });
-      await this.sendMessage(message.chatId, TG_KNOWLEDGE_SAVED);
+      await this.sendMessage(message.chatId, onboarding.saved);
       return true;
     }
 
     if (raw.startsWith("/")) {
-      await this.sendMessage(message.chatId, TG_KNOWLEDGE_AWAITING_SLASH);
+      await this.sendMessage(message.chatId, onboarding.awaitingSlash);
       return true;
     }
 
@@ -298,10 +281,6 @@ export class TelegramService implements OnModuleDestroy {
     return true;
   }
 
-  /**
-   * Показывает в чате статус «печатает…» на время обработки.
-   * Telegram сбрасывает индикатор ~за 5 с, поэтому обновляем периодически.
-   */
   private startTypingIndicator(chatId: number): () => void {
     void this.sendChatAction(chatId, "typing");
     const intervalMs = 4000;
