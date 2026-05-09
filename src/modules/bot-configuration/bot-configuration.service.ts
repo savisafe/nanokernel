@@ -12,10 +12,12 @@ import {
 export class BotConfigurationService implements OnModuleInit {
   private readonly logger = new Logger(BotConfigurationService.name);
   private readonly resolved: ResolvedBotConfiguration;
+  private readonly resolveCache = new Map<string, ResolvedBotConfiguration>();
 
   constructor() {
     const id = this.normalizeConfigurationId(process.env.BOT_CONFIGURATION?.trim() || "default");
     this.resolved = this.load(id);
+    this.resolveCache.set(id, this.resolved);
   }
 
   private normalizeConfigurationId(raw: string): string {
@@ -34,6 +36,17 @@ export class BotConfigurationService implements OnModuleInit {
 
   get(): ResolvedBotConfiguration {
     return this.resolved;
+  }
+
+  resolveById(rawConfigurationId: string): ResolvedBotConfiguration {
+    const id = this.normalizeConfigurationId(rawConfigurationId);
+    const hit = this.resolveCache.get(id);
+    if (hit) {
+      return hit;
+    }
+    const loaded = this.load(id);
+    this.resolveCache.set(id, loaded);
+    return loaded;
   }
 
   private load(configurationId: string): ResolvedBotConfiguration {

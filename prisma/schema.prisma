@@ -23,6 +23,8 @@ model User {
   /// Накопление черновика базы до команды /done
   knowledgeDraft     String?
   telegramKnowledgeAwaiting Boolean @default(false)
+  /// Выбор сборки config/configurations/<slug>.json (Telegram), см. BOT_CONFIGURATION
+  selectedBotConfigurationId String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   conversations Conversation[]

@@ -29,6 +29,11 @@ export class PromptProfileService implements OnModuleInit {
     return this.profile;
   }
 
+  /** Профиль для конкретной сборки (встроенный promptProfile в JSON или файл в config/prompt-profiles/). */
+  resolveProfileForBot(bot: ResolvedBotConfiguration): ResolvedLlmPromptProfile {
+    return this.loadResolvedProfile(bot.llmPromptProfile, bot);
+  }
+
   resolveProfileFromFilesystem(profileId: string): ResolvedLlmPromptProfile {
     const filePath = path.resolve(process.cwd(), "config", "prompt-profiles", `${profileId}.json`);
     try {

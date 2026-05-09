@@ -25,11 +25,18 @@ export interface TelegramApiMessage {
   sticker?: { file_id?: string };
 }
 
+export interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  message?: TelegramApiMessage;
+}
+
 export interface TelegramWebhookPayload {
   update_id?: number;
   message?: TelegramApiMessage;
   channel_post?: TelegramApiMessage;
   edited_message?: TelegramApiMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 export type TelegramUnsupportedAttachment =

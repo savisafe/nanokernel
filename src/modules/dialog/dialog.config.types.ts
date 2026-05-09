@@ -62,6 +62,11 @@ export interface DialogTelegramKnowledgeOnboarding {
   questionBeforeDoneHint: string;
   documentExtractShortWarning: string;
   linkNotSupportedInDraft: string;
+  modeChoiceCaption: string;
+  modeButtonKnowledgeConsultant: string;
+  modeButtonOpenTopics: string;
+  modeAppliedKnowledgeConsultant: string;
+  modeAppliedOpenTopics: string;
 }
 
 export interface DialogSystemPromptFrame {

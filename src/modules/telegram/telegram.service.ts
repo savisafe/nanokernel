@@ -12,9 +12,14 @@ import { isDevelopment } from "../shared/is-development";
 import {
   type TelegramApiMessage,
   type TelegramUnsupportedAttachment,
+  type TelegramCallbackQuery,
   IncomingTelegramMessage,
   TelegramWebhookPayload,
 } from "./telegram.types";
+
+/** Префикс callback_data для выбора config/configurations/&lt;slug&gt;.json в Telegram */
+const TELEGRAM_BOT_CONFIGURATION_CALLBACK_PREFIX = "bot_cfg:";
+const TELEGRAM_BOT_CONFIGURATION_CHOICE_SLUGS = new Set(["knowledge-consultant", "open-topics"]);
 
 @Injectable()
 export class TelegramService implements OnModuleDestroy {
@@ -68,8 +73,8 @@ export class TelegramService implements OnModuleDestroy {
     }
   }
 
-  private scheduleDebouncedDraftAck(chatId: number): void {
-    const onboarding = this.dialogService.getTelegramKnowledgeOnboarding();
+  private async scheduleDebouncedDraftAck(chatId: number): Promise<void> {
+    const onboarding = await this.dialogService.getTelegramKnowledgeOnboardingForExternalUser(String(chatId));
     this.clearDebouncedDraftAck(chatId);
     const timer = setTimeout(() => {
       this.draftAckTimers.delete(chatId);
@@ -86,7 +91,8 @@ export class TelegramService implements OnModuleDestroy {
     if (!user?.telegramKnowledgeAwaiting) {
       return;
     }
-    await this.sendMessage(chatId, this.dialogService.getTelegramKnowledgeOnboarding().draftSavedAck);
+    const onboarding = await this.dialogService.getTelegramKnowledgeOnboardingForExternalUser(externalId);
+    await this.sendMessage(chatId, onboarding.draftSavedAck);
   }
 
   private static messageFromUpdate(payload: TelegramWebhookPayload): TelegramApiMessage | undefined {
@@ -178,6 +184,11 @@ export class TelegramService implements OnModuleDestroy {
   }
 
   async handleIncoming(payload: TelegramWebhookPayload): Promise<void> {
+    if (payload.callback_query) {
+      await this.handleBotConfigurationCallback(payload.callback_query);
+      return;
+    }
+
     const message = this.extractMessage(payload);
     if (!message) {
       this.logSkippedTelegramUpdate(payload);
@@ -264,7 +275,9 @@ export class TelegramService implements OnModuleDestroy {
       return;
     }
 
-    const onboardingEarly = this.dialogService.getTelegramKnowledgeOnboarding();
+    const onboardingEarly = await this.dialogService.getTelegramKnowledgeOnboardingForExternalUser(
+      String(message.chatId),
+    );
     if (message.document) {
       await this.sendMessage(message.chatId, onboardingEarly.documentOutsideKnowledgeMode);
       return;
@@ -313,10 +326,25 @@ export class TelegramService implements OnModuleDestroy {
     const externalId = String(message.chatId);
     const raw = message.text.trim();
     const cmd = TelegramService.telegramCommandToken(raw);
-    const onboarding = this.dialogService.getTelegramKnowledgeOnboarding();
+    const onboarding = await this.dialogService.getTelegramKnowledgeOnboardingForExternalUser(externalId);
 
     if (cmd === "/start") {
-      await this.sendMessage(message.chatId, onboarding.welcomeStart);
+      await this.sendMessage(message.chatId, onboarding.modeChoiceCaption, {
+        replyMarkup: {
+          inline_keyboard: [
+            [
+              {
+                text: onboarding.modeButtonKnowledgeConsultant,
+                callback_data: `${TELEGRAM_BOT_CONFIGURATION_CALLBACK_PREFIX}knowledge-consultant`,
+              },
+              {
+                text: onboarding.modeButtonOpenTopics,
+                callback_data: `${TELEGRAM_BOT_CONFIGURATION_CALLBACK_PREFIX}open-topics`,
+              },
+            ],
+          ],
+        },
+      });
       return true;
     }
 
@@ -454,11 +482,84 @@ export class TelegramService implements OnModuleDestroy {
       where: { id: user.id },
       data: { knowledgeDraft: nextDraft },
     });
-    this.scheduleDebouncedDraftAck(message.chatId);
+    await this.scheduleDebouncedDraftAck(message.chatId);
     return true;
   }
 
-  async sendMessage(chatId: number, text: string): Promise<boolean> {
+  /**
+   * Inline-кнопки после /start: сохраняем slug сборки в User.selectedBotConfigurationId.
+   */
+  private async handleBotConfigurationCallback(query: TelegramCallbackQuery): Promise<void> {
+    const chatId = query.message?.chat?.id;
+    const data = query.data?.trim();
+    const callbackQueryId = query.id;
+    if (typeof chatId !== "number" || !callbackQueryId || !data?.startsWith(TELEGRAM_BOT_CONFIGURATION_CALLBACK_PREFIX)) {
+      return;
+    }
+
+    const slug = data.slice(TELEGRAM_BOT_CONFIGURATION_CALLBACK_PREFIX.length);
+    if (!TELEGRAM_BOT_CONFIGURATION_CHOICE_SLUGS.has(slug)) {
+      await this.answerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    const shouldProcess = await this.idempotencyService.tryProcess("telegram", `cb:${callbackQueryId}`);
+    if (!shouldProcess) {
+      await this.answerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    const externalId = String(chatId);
+    await this.prisma.user.upsert({
+      where: {
+        channel_externalId: { channel: "telegram", externalId },
+      },
+      create: {
+        channel: "telegram",
+        externalId,
+        selectedBotConfigurationId: slug,
+      },
+      update: {
+        selectedBotConfigurationId: slug,
+      },
+    });
+
+    await this.answerCallbackQuery(callbackQueryId);
+
+    const onboarding = await this.dialogService.getTelegramKnowledgeOnboardingForExternalUser(externalId);
+    const confirmation =
+      slug === "knowledge-consultant"
+        ? onboarding.modeAppliedKnowledgeConsultant
+        : onboarding.modeAppliedOpenTopics;
+    await this.sendMessage(chatId, confirmation);
+  }
+
+  private async answerCallbackQuery(callbackQueryId: string): Promise<void> {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      return;
+    }
+    const url = `https://api.telegram.org/bot${token}/answerCallbackQuery`;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: callbackQueryId }),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        this.logger.warn(`Telegram answerCallbackQuery failed: ${response.status} ${errText}`);
+      }
+    } catch (e) {
+      this.logger.warn(`Telegram answerCallbackQuery error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async sendMessage(
+    chatId: number,
+    text: string,
+    options?: { replyMarkup?: Record<string, unknown> },
+  ): Promise<boolean> {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) {
       this.logger.warn("TELEGRAM_BOT_TOKEN is not set");
@@ -466,15 +567,19 @@ export class TelegramService implements OnModuleDestroy {
     }
 
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text,
+    };
+    if (options?.replyMarkup) {
+      body.reply_markup = options.replyMarkup;
+    }
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {

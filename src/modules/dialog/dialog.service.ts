@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma, User } from "@prisma/client";
 import { LlmChatMessage, LlmService } from "../llm/llm.service";
@@ -23,7 +23,7 @@ import {
 } from "./dialog.types";
 
 @Injectable()
-export class DialogService implements OnModuleInit {
+export class DialogService {
 
   private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
       //TODO ru hardcode, move
@@ -32,13 +32,12 @@ export class DialogService implements OnModuleInit {
     /(^|\s)(summary|summarize|overview|tl;dr)(\s|$|[,.!?])/i,
     /(?:^|[\s,.;:!?«»(])(о\s+ч[её]м\s+документ|что\s+за\s+документ)(?:[\s,.;:!?»)]|$)/iu,
   ];
-  private defaultSnapshot!: DialogRuntimeSnapshot;
   private readonly effective: EffectiveDialogRuntime;
-  private readonly tokenSplitRegex: RegExp;
-  private readonly retrievalStopWords: Set<string>;
-  private readonly chunkBreakpoints: readonly string[];
-  private readonly chunkMinAdvanceChars: number;
   private readonly knowledgeChunksCache = new Map<string, KnowledgeChunkRuntime[]>();
+  private readonly tokenizationRuntimeCache = new Map<
+    string,
+    { regex: RegExp; stopWords: Set<string> }
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -48,15 +47,6 @@ export class DialogService implements OnModuleInit {
     private readonly ragService: RagService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
-    const d = this.effective;
-    this.tokenSplitRegex = new RegExp(d.tokenization.splitPattern, d.tokenization.splitFlags);
-    this.retrievalStopWords = new Set(d.tokenization.stopWords);
-    this.chunkBreakpoints = d.chunkBoundaries.breakpoints;
-    this.chunkMinAdvanceChars = d.chunkBoundaries.minAdvanceChars;
-  }
-
-  onModuleInit() {
-    this.defaultSnapshot = this.composeSnapshot(this.promptProfile.getProfile(), this.botConfiguration.get());
   }
 
   getTelegramKnowledgeOnboarding() {
@@ -80,20 +70,26 @@ export class DialogService implements OnModuleInit {
   }
 
   private resolveRuntimeSnapshotForUser(channel: ChannelType, user: User): DialogRuntimeSnapshot {
-    const base = this.defaultSnapshot;
+    const globalBot = this.botConfiguration.get();
+    const bot =
+      user.selectedBotConfigurationId?.trim().length
+        ? this.botConfiguration.resolveById(user.selectedBotConfigurationId.trim())
+        : globalBot;
+    const profile = this.promptProfile.resolveProfileForBot(bot);
+    const base = this.composeSnapshot(profile, bot);
     const scope = user.knowledgeScopeText?.trim();
     if (channel === "telegram" && scope && scope.length > 0) {
-      const profile: ResolvedLlmPromptProfile = {
+      const profileScoped: ResolvedLlmPromptProfile = {
         ...base.profile,
         scopeText: scope,
       };
-      const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, base.bot);
+      const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profileScoped, base.bot);
       return {
-        profile,
+        profile: profileScoped,
         bot: base.bot,
         llmSystemPromptPrefix: prefix,
         llmSystemPromptSuffix: suffix,
-        knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profile, base.bot),
+        knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profileScoped, base.bot),
         disableRag: true,
       };
     }
@@ -104,7 +100,7 @@ export class DialogService implements OnModuleInit {
    * Один ход диалога с диагностикой (system prompt, retrieval).
    * Не используется вебхуками; для внутренней диагностики и тестов.
    */
-  //TODO unuse, need add linter
+  //TODO legacy, unuse, need add linter
   async runDiagnosticTurn(input: DialogInput, snapshot: DialogRuntimeSnapshot): Promise<DialogOutputWithDiagnostics> {
     const { conversation } = await this.getOrCreateConversation(input.channel, input.externalUserId);
 
@@ -117,7 +113,7 @@ export class DialogService implements OnModuleInit {
     });
 
     const nextStage = conversation.stage;
-    const templateReply = this.buildReply(nextStage, input.text);
+    const templateReply = this.buildReply(nextStage, input.text, snapshot);
     const { replyText, diagnostics } = await this.tryLlmReplyWithDiagnostics(
       conversation.id,
       nextStage,
@@ -192,7 +188,7 @@ export class DialogService implements OnModuleInit {
     });
 
     const nextStage = conversation.stage;
-    const templateReply = this.buildReply(nextStage, input.text);
+    const templateReply = this.buildReply(nextStage, input.text, snap);
     const replyText = await this.tryLlmReply(
       conversation.id,
       nextStage,
@@ -225,6 +221,19 @@ export class DialogService implements OnModuleInit {
       return this.effective;
     }
     return resolveEffectiveDialog(bot);
+  }
+
+  private tokenizationRuntime(bot: ResolvedBotConfiguration): { regex: RegExp; stopWords: Set<string> } {
+    let cached = this.tokenizationRuntimeCache.get(bot.id);
+    if (!cached) {
+      const eff = this.effectiveFor(bot);
+      cached = {
+        regex: new RegExp(eff.tokenization.splitPattern, eff.tokenization.splitFlags),
+        stopWords: new Set(eff.tokenization.stopWords),
+      };
+      this.tokenizationRuntimeCache.set(bot.id, cached);
+    }
+    return cached;
   }
 
   private async getOrCreateConversation(channel: string, externalUserId: string) {
@@ -273,8 +282,8 @@ export class DialogService implements OnModuleInit {
     }
   }
 
-  private buildReply(stage: string, clientText: string): string {
-    const { templateStages } = this.effective;
+  private buildReply(stage: string, clientText: string, snap: DialogRuntimeSnapshot): string {
+    const { templateStages } = this.effectiveFor(snap.bot);
     const selected = templateStages[stage] ?? templateStages.contact;
     if (!selected) {
       return clientText;
@@ -353,7 +362,7 @@ export class DialogService implements OnModuleInit {
       };
     }
 
-    const contextLimit = this.getLlmContextMessageLimit();
+    const contextLimit = this.getLlmContextMessageLimit(snap.bot);
     const rows = await this.prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "desc" },
@@ -451,7 +460,7 @@ export class DialogService implements OnModuleInit {
     if (cached) {
       return cached;
     }
-    const built = this.buildKnowledgeChunks(scope, chunkSize, overlap);
+    const built = this.buildKnowledgeChunks(scope, chunkSize, overlap, bot);
     this.knowledgeChunksCache.set(cacheKey, built);
     const maxCacheEntries = 100;
     if (this.knowledgeChunksCache.size > maxCacheEntries) {
@@ -612,8 +621,8 @@ export class DialogService implements OnModuleInit {
   }
 
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */
-  private getLlmContextMessageLimit(): number {
-    const cfg = this.effective.llmContextMessages;
+  private getLlmContextMessageLimit(bot: ResolvedBotConfiguration): number {
+    const cfg = this.effectiveFor(bot).llmContextMessages;
     const raw = process.env[cfg.envVarName]?.trim();
     if (raw === undefined || raw === "") {
       return cfg.defaultLimit;
@@ -625,7 +634,12 @@ export class DialogService implements OnModuleInit {
     return Math.min(cfg.max, Math.max(cfg.min, Math.floor(n)));
   }
 
-  private buildKnowledgeChunks(scopeText: string, chunkSize: number, overlap: number): KnowledgeChunkRuntime[] {
+  private buildKnowledgeChunks(
+    scopeText: string,
+    chunkSize: number,
+    overlap: number,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
     const normalized = scopeText.replace(/\r\n/g, "\n").trim();
     if (!normalized) {
       return [];
@@ -636,10 +650,10 @@ export class DialogService implements OnModuleInit {
     let id = 1;
     while (start < normalized.length) {
       const end = Math.min(normalized.length, start + chunkSize);
-      const cut = this.findChunkBoundary(normalized, start, end);
+      const cut = this.findChunkBoundary(normalized, start, end, bot);
       const text = normalized.slice(start, cut).trim();
       if (text.length > 0) {
-        chunks.push({ id, text, tokens: new Set(this.tokenizeForRetrieval(text)) });
+        chunks.push({ id, text, tokens: new Set(this.tokenizeForRetrieval(text, bot)) });
         id += 1;
       }
       if (cut >= normalized.length) {
@@ -650,13 +664,19 @@ export class DialogService implements OnModuleInit {
     return chunks;
   }
 
-  private findChunkBoundary(text: string, start: number, targetEnd: number): number {
+  private findChunkBoundary(
+    text: string,
+    start: number,
+    targetEnd: number,
+    bot: ResolvedBotConfiguration,
+  ): number {
+    const { breakpoints, minAdvanceChars } = this.effectiveFor(bot).chunkBoundaries;
     if (targetEnd >= text.length) {
       return text.length;
     }
-    for (const point of this.chunkBreakpoints) {
+    for (const point of breakpoints) {
       const idx = text.lastIndexOf(point, targetEnd);
-      if (idx > start + this.chunkMinAdvanceChars) {
+      if (idx > start + minAdvanceChars) {
         return idx + point.length;
       }
     }
@@ -701,7 +721,7 @@ export class DialogService implements OnModuleInit {
     if (snap.knowledgeChunks.length === 0) {
       return { mode: "none", chunks: [] };
     }
-    const queryTokens = this.tokenizeForRetrieval(userText);
+    const queryTokens = this.tokenizeForRetrieval(userText, snap.bot);
     if (queryTokens.length === 0) {
       if (this.isGlobalKnowledgeRequest(userText)) {
         return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
@@ -862,14 +882,16 @@ export class DialogService implements OnModuleInit {
     return false;
   }
 
-  private tokenizeForRetrieval(text: string): string[] {
-    const minLen = this.effective.tokenization.minTokenLength;
+  private tokenizeForRetrieval(text: string, bot: ResolvedBotConfiguration): string[] {
+    const eff = this.effectiveFor(bot);
+    const minLen = eff.tokenization.minTokenLength;
+    const { regex, stopWords } = this.tokenizationRuntime(bot);
     const raw = text
       .toLowerCase()
       .replace(/ё/g, "е")
-      .split(this.tokenSplitRegex)
+      .split(regex)
       .map((t) => t.trim())
       .filter((t) => t.length >= minLen);
-    return raw.filter((t) => !this.retrievalStopWords.has(t));
+    return raw.filter((t) => !stopWords.has(t));
   }
 }
