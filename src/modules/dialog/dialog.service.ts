@@ -9,7 +9,7 @@ import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
-import type { EffectiveDialogRuntime } from "./dialog.config.types";
+import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
 import { interpolateTemplate } from "./dialog-template.utils";
 import {
@@ -24,11 +24,13 @@ import {
 
 @Injectable()
 export class DialogService implements OnModuleInit {
+
   private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
-    /\b(пересказ|перескажи|суммарно|суммируй|кратко|резюме|выжимк|расскажи|опиши)\b/i,
-    /\b(summary|summarize|overview|tl;dr)\b/i,
-    /\b(о\s+ч[её]м\s+документ)\b/i,
-    /\b(что\s+за\s+документ)\b/i,
+      //TODO ru hardcode, move
+    /(?:^|[\s,.;:!?«»(])(пересказ|перескажи|суммарно|суммируй|кратко|резюме|выжимк|расскажи|опиши|объясни)(?:[\s,.;:!?»)]|$)/iu,
+      //TODO move magic link
+    /(^|\s)(summary|summarize|overview|tl;dr)(\s|$|[,.!?])/i,
+    /(?:^|[\s,.;:!?«»(])(о\s+ч[её]м\s+документ|что\s+за\s+документ)(?:[\s,.;:!?»)]|$)/iu,
   ];
   private defaultSnapshot!: DialogRuntimeSnapshot;
   private readonly effective: EffectiveDialogRuntime;
@@ -61,10 +63,10 @@ export class DialogService implements OnModuleInit {
     return this.effective.telegramKnowledgeOnboarding;
   }
 
-  /**
-   * Сборка снимка для админского теста или кастомного рантайма.
-   * Прод-путь использует defaultSnapshot из env и файлов профиля/сборки на старте.
-   */
+  isGlobalKnowledgeIntent(text: string): boolean {
+    return this.isGlobalKnowledgeRequest(text);
+  }
+
   composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
     const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, bot);
     const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
@@ -102,6 +104,7 @@ export class DialogService implements OnModuleInit {
    * Один ход диалога с диагностикой (system prompt, retrieval).
    * Не используется вебхуками; для внутренней диагностики и тестов.
    */
+  //TODO unuse, need add linter
   async runDiagnosticTurn(input: DialogInput, snapshot: DialogRuntimeSnapshot): Promise<DialogOutputWithDiagnostics> {
     const { conversation } = await this.getOrCreateConversation(input.channel, input.externalUserId);
 
@@ -700,6 +703,9 @@ export class DialogService implements OnModuleInit {
     }
     const queryTokens = this.tokenizeForRetrieval(userText);
     if (queryTokens.length === 0) {
+      if (this.isGlobalKnowledgeRequest(userText)) {
+        return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
+      }
       return { mode: "lexical", chunks: [] };
     }
     const querySet = new Set(queryTokens);
@@ -718,26 +724,7 @@ export class DialogService implements OnModuleInit {
 
     if (scored.length === 0) {
       if (this.isGlobalKnowledgeRequest(userText)) {
-        const topK = snap.profile.retrievalTopK ?? defaultTopK;
-        const top = snap.knowledgeChunks.slice(0, topK);
-        if (top.length > 0) {
-          const formatted = this.formatRetrievedContext(
-            top.map((x) =>
-              interpolateTemplate(rp.lexicalFragmentLineTemplate, {
-                id: x.id,
-                overlap: 0,
-                text: this.trimRetrievedChunkText(x.text, maxChunkChars),
-              }),
-            ),
-            rp.chunkJoinSeparator,
-            maxContextChars,
-          );
-          return {
-            mode: "lexical",
-            context: formatted,
-            chunks: top.map((x) => ({ id: x.id, text: x.text, overlap: 0 })),
-          };
-        }
+        return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
       }
       return { mode: "lexical", chunks: [] };
     }
@@ -759,6 +746,35 @@ export class DialogService implements OnModuleInit {
       mode: "lexical",
       context: formatted,
       chunks: top.map((x) => ({ id: x.chunk.id, text: x.chunk.text, overlap: x.overlap })),
+    };
+  }
+
+  private lexicalIntroChunksFromStartOfBase(
+    snap: DialogRuntimeSnapshot,
+    rp: DialogRetrievalPresentation,
+    maxContextChars: number,
+    maxChunkChars: number,
+  ): { context?: string; mode: "lexical"; chunks: DialogDiagnosticChunk[] } {
+    const topK = snap.profile.retrievalTopK ?? rp.defaultTopK;
+    const top = snap.knowledgeChunks.slice(0, topK);
+    if (top.length === 0) {
+      return { mode: "lexical", chunks: [] };
+    }
+    const formatted = this.formatRetrievedContext(
+      top.map((x) =>
+        interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+          id: x.id,
+          overlap: 0,
+          text: this.trimRetrievedChunkText(x.text, maxChunkChars),
+        }),
+      ),
+      rp.chunkJoinSeparator,
+      maxContextChars,
+    );
+    return {
+      mode: "lexical",
+      context: formatted,
+      chunks: top.map((x) => ({ id: x.id, text: x.text, overlap: 0 })),
     };
   }
 
@@ -806,13 +822,44 @@ export class DialogService implements OnModuleInit {
     if (DialogService.GLOBAL_KNOWLEDGE_REQUEST_PATTERNS.some((pattern) => pattern.test(text))) {
       return true;
     }
-    const hasDocNoun =
-      /\b(документ|документа|документе|текст|файл|база|базу|материал|материалу)\b/i.test(text);
-    const hasGlobalIntentVerb =
-      /\b(расскажи|опиши|объясни|суммируй|кратко|краткий|перескажи|summary|overview|tl;dr|что\s+за|о\s+чем)\b/i.test(
+
+    if (
+        //TODO ru hardcode
+      /(?:^|[\s,.;:!?«»(])(о\s+чем|о\s+чём|про\s+что|про\s+чём|на\s+чём|на\s+чем|что\s+за)\s+/iu.test(
+        text,
+      )
+    ) {
+      return true;
+    }
+
+    const hasDocAnchor =
+        //TODO ru hardcode
+        /(?:^|[\s,.;:!?«»(])(документ|документа|документе|текст|текста|файл|файла|база|базу|материал|материалу|загружен|загрузил)(?:[\s,.;:!?»)]|$)/iu.test(
         text,
       );
-    return hasDocNoun && hasGlobalIntentVerb;
+    const hasGlobalIntentVerb =
+      /(?:^|[\s,.;:!?«»(])(расскажи|опиши|объясни|суммируй|кратко|краткий|перескажи|summary|overview|tl;dr|что\s+за|о\s+чем|о\s+чём)(?:[\s,.;:!?»)]|$)/iu.test(
+        text,
+      );
+    if (hasDocAnchor && hasGlobalIntentVerb) {
+      return true;
+    }
+
+    const maxLen = 140;
+    if (text.length <= maxLen) {
+      if (/^(как\s+дела|как\s+жизнь|как\s+поживаешь|что\s+нового)\s*[?.!]?$/iu.test(text)) {
+        return false;
+      }
+      const interrogativeLead =
+        /^(что|кто|где|когда|почему|зачем|сколько|какой|какая|какое|какие|чей|чья|чьё|чьи|как)\s+/iu.test(
+          text,
+        );
+      if (interrogativeLead) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private tokenizeForRetrieval(text: string): string[] {

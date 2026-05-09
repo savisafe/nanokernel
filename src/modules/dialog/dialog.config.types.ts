@@ -51,6 +51,17 @@ export interface DialogTelegramKnowledgeOnboarding {
   awaitingSlash: string;
   strictNoScopeAwaitingDraft: string;
   strictNoScopeNeedNew: string;
+  documentOutsideKnowledgeMode: string;
+  documentUnsupportedFormat: string;
+  documentTooLarge: string;
+  documentDownloadFailed: string;
+  documentExtractFailed: string;
+  documentExtractEmpty: string;
+  documentAcceptedAck: string;
+  attachmentNotDocumentHint: string;
+  questionBeforeDoneHint: string;
+  documentExtractShortWarning: string;
+  linkNotSupportedInDraft: string;
 }
 
 export interface DialogSystemPromptFrame {

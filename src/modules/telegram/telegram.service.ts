@@ -1,5 +1,8 @@
 import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { performance } from "node:perf_hooks";
+import type { DocumentIngestResult } from "../document-ingest/document-ingest.service";
+import { DocumentIngestService } from "../document-ingest/document-ingest.service";
+import type { DialogTelegramKnowledgeOnboarding } from "../dialog/dialog.config.types";
 import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
 import { DialogService } from "../dialog/dialog.service";
 import { DialogOutput } from "../dialog/dialog.types";
@@ -7,6 +10,8 @@ import { IdempotencyService } from "../idempotency/idempotency.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isDevelopment } from "../shared/is-development";
 import {
+  type TelegramApiMessage,
+  type TelegramUnsupportedAttachment,
   IncomingTelegramMessage,
   TelegramWebhookPayload,
 } from "./telegram.types";
@@ -15,20 +20,37 @@ import {
 export class TelegramService implements OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
   private readonly draftAckTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private readonly inboundChains = new Map<number, Promise<void>>();
+  private static readonly KNOWLEDGE_QUESTION_BEFORE_DONE_MAX_CHARS = 200;
+  private static readonly DOCUMENT_EXTRACT_SHORT_CHARS = 80;
 
   constructor(
     private readonly dialogService: DialogService,
+    private readonly documentIngest: DocumentIngestService,
     private readonly idempotencyService: IdempotencyService,
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => DialogQueueService))
     private readonly dialogQueueService: DialogQueueService,
   ) {}
 
-  /** Первый токен как команда: нижний регистр, без @BotName (группы). */
   private static telegramCommandToken(rawTrimmed: string): string {
     const first = rawTrimmed.split(/\s+/)[0] ?? "";
     const base = first.includes("@") ? (first.split("@")[0] ?? first) : first;
     return base.toLowerCase();
+  }
+
+  /** Сообщение состоит только из URL — в черновик не кладём (импорт по ссылке пока не поддерживается). */
+  private static isUrlOnlyKnowledgeDraftInput(text: string): boolean {
+    const t = text.trim();
+    if (!t) return false;
+    const tokens = t.split(/\s+/).filter((x) => x.length > 0);
+    const normalize = (s: string) =>
+      s.replace(/^<|>$/g, "").replace(/^\(+/, "").replace(/\)+$/u, "").trim();
+    const looksLikeUrl = (s: string) => {
+      const u = normalize(s);
+      return /^https?:\/\//i.test(u) || /^www\.\S+/i.test(u);
+    };
+    return tokens.every(looksLikeUrl);
   }
 
   onModuleDestroy() {
@@ -46,7 +68,6 @@ export class TelegramService implements OnModuleDestroy {
     }
   }
 
-  /** Одно подтверждение после серии быстрых сообщений (вставка большого документа). */
   private scheduleDebouncedDraftAck(chatId: number): void {
     const onboarding = this.dialogService.getTelegramKnowledgeOnboarding();
     this.clearDebouncedDraftAck(chatId);
@@ -68,25 +89,98 @@ export class TelegramService implements OnModuleDestroy {
     await this.sendMessage(chatId, this.dialogService.getTelegramKnowledgeOnboarding().draftSavedAck);
   }
 
-  extractMessage(payload: TelegramWebhookPayload): IncomingTelegramMessage | null {
-    const message = payload.message;
-    const text = message?.text?.trim();
-    const chatId = message?.chat?.id;
+  private static messageFromUpdate(payload: TelegramWebhookPayload): TelegramApiMessage | undefined {
+    return payload.message ?? payload.channel_post ?? payload.edited_message;
+  }
 
-    if (!text || typeof chatId !== "number") {
+  private static detectUnsupportedAttachment(msg: TelegramApiMessage): TelegramUnsupportedAttachment | undefined {
+    if (msg.photo && msg.photo.length > 0) {
+      return "photo";
+    }
+    if (msg.voice?.file_id) {
+      return "voice";
+    }
+    if (msg.audio?.file_id) {
+      return "audio";
+    }
+    if (msg.video?.file_id) {
+      return "video";
+    }
+    if (msg.video_note?.file_id) {
+      return "video_note";
+    }
+    if (msg.sticker?.file_id) {
+      return "sticker";
+    }
+    return undefined;
+  }
+
+  extractMessage(payload: TelegramWebhookPayload): IncomingTelegramMessage | null {
+    const message = TelegramService.messageFromUpdate(payload);
+    if (!message) {
+      return null;
+    }
+    const chatId = message.chat?.id;
+    if (typeof chatId !== "number") {
       return null;
     }
 
-    return {
-      chatId,
-      text,
-      messageId: message?.message_id,
-    };
+    const doc = message.document;
+    const combinedText = (message.text ?? message.caption ?? "").trim();
+
+    if (doc) {
+      if (!doc.file_id) {
+        this.logger.warn(
+          `Telegram document without file_id (chatId=${chatId} message_id=${message.message_id ?? "?"})`,
+        );
+      } else {
+        return {
+          chatId,
+          text: combinedText,
+          messageId: message.message_id,
+          document: {
+            fileId: doc.file_id,
+            fileName: doc.file_name,
+            mimeType: doc.mime_type,
+          },
+        };
+      }
+    }
+
+    if (combinedText) {
+      return {
+        chatId,
+        text: combinedText,
+        messageId: message.message_id,
+      };
+    }
+
+    const unsupported = TelegramService.detectUnsupportedAttachment(message);
+    if (unsupported) {
+      return {
+        chatId,
+        text: "",
+        messageId: message.message_id,
+        unsupportedAttachment: unsupported,
+      };
+    }
+
+    return null;
+  }
+
+  private logSkippedTelegramUpdate(payload: TelegramWebhookPayload): void {
+    const msg = TelegramService.messageFromUpdate(payload);
+    const payloadKeys = Object.keys(payload).join(",");
+    const msgKeys = msg ? Object.keys(msg).join(",") : "";
+    this.logger.warn(
+      `Telegram update ignored (no text/file we handle): update_id=${payload.update_id ?? "?"} payloadKeys=${payloadKeys} messageKeys=${msgKeys}`,
+    );
   }
 
   async handleIncoming(payload: TelegramWebhookPayload): Promise<void> {
     const message = this.extractMessage(payload);
     if (!message) {
+      this.logSkippedTelegramUpdate(payload);
       return;
     }
 
@@ -100,8 +194,13 @@ export class TelegramService implements OnModuleDestroy {
     }
 
     const dev = isDevelopment();
-    const preview =
-      message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text;
+    const preview = message.unsupportedAttachment
+      ? `[unsupported:${message.unsupportedAttachment}]`
+      : message.document
+        ? `[document ${message.document.fileName ?? "file"}${message.text ? ` + ${message.text.slice(0, 80)}` : ""}]`
+        : message.text.length > 120
+          ? `${message.text.slice(0, 120)}…`
+          : message.text;
     const flowStarted = dev ? performance.now() : 0;
     if (dev) {
       this.logger.log(
@@ -135,8 +234,39 @@ export class TelegramService implements OnModuleDestroy {
     message: IncomingTelegramMessage,
     flowStarted?: number,
   ): Promise<void> {
+    await this.runInboundSerialized(message.chatId, () =>
+      this.processInboundQueuedInner(message, flowStarted),
+    );
+  }
+
+  private runInboundSerialized(chatId: number, task: () => Promise<void>): Promise<void> {
+    const prev = this.inboundChains.get(chatId) ?? Promise.resolve();
+    const composed = prev
+      .catch(() => {
+        //TODO add error logs
+      })
+      .then(() => task());
+    this.inboundChains.set(chatId, composed);
+    composed.finally(() => {
+      if (this.inboundChains.get(chatId) === composed) {
+        this.inboundChains.delete(chatId);
+      }
+    });
+    return composed;
+  }
+
+  private async processInboundQueuedInner(
+    message: IncomingTelegramMessage,
+    flowStarted?: number,
+  ): Promise<void> {
     const handledKnowledge = await this.tryHandleTelegramKnowledgeOnboarding(message);
     if (handledKnowledge) {
+      return;
+    }
+
+    const onboardingEarly = this.dialogService.getTelegramKnowledgeOnboarding();
+    if (message.document) {
+      await this.sendMessage(message.chatId, onboardingEarly.documentOutsideKnowledgeMode);
       return;
     }
 
@@ -216,6 +346,15 @@ export class TelegramService implements OnModuleDestroy {
     const user = await this.prisma.user.findFirst({
       where: { channel: "telegram", externalId },
     });
+
+    if (message.unsupportedAttachment) {
+      const hint = user?.telegramKnowledgeAwaiting
+        ? onboarding.attachmentNotDocumentHint
+        : onboarding.documentOutsideKnowledgeMode;
+      await this.sendMessage(message.chatId, hint);
+      return true;
+    }
+
     if (!user?.telegramKnowledgeAwaiting) {
       return false;
     }
@@ -241,6 +380,71 @@ export class TelegramService implements OnModuleDestroy {
 
     if (raw.startsWith("/")) {
       await this.sendMessage(message.chatId, onboarding.awaitingSlash);
+      return true;
+    }
+
+    if (message.document) {
+      try {
+        const buf = await this.downloadTelegramFile(message.document.fileId);
+        if (buf.length > this.maxTelegramDocumentBytes()) {
+          await this.sendMessage(message.chatId, onboarding.documentTooLarge);
+          return true;
+        }
+        const extracted = await this.documentIngest.extractText(buf, {
+          fileName: message.document.fileName,
+          mimeType: message.document.mimeType,
+        });
+        if (!extracted.ok) {
+          await this.sendMessage(message.chatId, this.ingestFailureReply(onboarding, extracted));
+          return true;
+        }
+        let piece = extracted.text;
+        if (raw.length > 0) {
+          piece = `${extracted.text}\n\n${raw}`;
+        }
+        const sep = user.knowledgeDraft && user.knowledgeDraft.length > 0 ? "\n\n" : "";
+        const nextDraft = (user.knowledgeDraft ?? "") + sep + piece;
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { knowledgeDraft: nextDraft },
+        });
+        if (isDevelopment()) {
+          this.logger.log(
+            `[Telegram] knowledge draft appended from document chars=${piece.length} file=${message.document.fileName ?? "unknown"}`,
+          );
+        }
+        this.clearDebouncedDraftAck(message.chatId);
+        const baseName = message.document.fileName?.trim();
+        const fileLabel = baseName ? ` «${baseName}»` : "";
+        const pieceChars = [...piece].length;
+        const ack = onboarding.documentAcceptedAck
+          .replace("{fileLabel}", fileLabel)
+          .replace("{chars}", String(pieceChars));
+        await this.sendMessage(message.chatId, ack);
+        if (pieceChars < TelegramService.DOCUMENT_EXTRACT_SHORT_CHARS) {
+          await this.sendMessage(message.chatId, onboarding.documentExtractShortWarning);
+        }
+        return true;
+      } catch (e) {
+        this.logger.warn(
+          `Telegram document ingest failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        await this.sendMessage(message.chatId, onboarding.documentDownloadFailed);
+        return true;
+      }
+    }
+
+    if (
+      raw.length > 0 &&
+      raw.length <= TelegramService.KNOWLEDGE_QUESTION_BEFORE_DONE_MAX_CHARS &&
+      this.dialogService.isGlobalKnowledgeIntent(raw)
+    ) {
+      await this.sendMessage(message.chatId, onboarding.questionBeforeDoneHint);
+      return true;
+    }
+
+    if (TelegramService.isUrlOnlyKnowledgeDraftInput(raw)) {
+      await this.sendMessage(message.chatId, onboarding.linkNotSupportedInDraft);
       return true;
     }
 
@@ -288,6 +492,50 @@ export class TelegramService implements OnModuleDestroy {
       void this.sendChatAction(chatId, "typing");
     }, intervalMs);
     return () => clearInterval(timer);
+  }
+
+  private maxTelegramDocumentBytes(): number {
+    const n = Number(process.env.TELEGRAM_DOCUMENT_MAX_BYTES);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 20 * 1024 * 1024;
+  }
+
+  private async downloadTelegramFile(fileId: string): Promise<Buffer> {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      throw new Error("TELEGRAM_BOT_TOKEN is not set");
+    }
+    const getFileUrl = `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;
+    const gf = await fetch(getFileUrl);
+    const json = (await gf.json()) as {
+      ok?: boolean;
+      result?: { file_path?: string };
+      description?: string;
+    };
+    if (!json.ok || !json.result?.file_path) {
+      throw new Error(json.description ?? "getFile failed");
+    }
+    const fileUrl = `https://api.telegram.org/file/bot${token}/${json.result.file_path}`;
+    const fileRes = await fetch(fileUrl);
+    if (!fileRes.ok) {
+      throw new Error(`file download HTTP ${fileRes.status}`);
+    }
+    return Buffer.from(await fileRes.arrayBuffer());
+  }
+
+  private ingestFailureReply(
+    onboarding: DialogTelegramKnowledgeOnboarding,
+    result: Extract<DocumentIngestResult, { ok: false }>,
+  ): string {
+    switch (result.kind) {
+      case "unsupported":
+        return onboarding.documentUnsupportedFormat;
+      case "empty":
+        return onboarding.documentExtractEmpty;
+      case "parse_error":
+        return onboarding.documentExtractFailed;
+      default:
+        return onboarding.documentExtractFailed;
+    }
   }
 
   private async sendChatAction(chatId: number, action: string): Promise<void> {
