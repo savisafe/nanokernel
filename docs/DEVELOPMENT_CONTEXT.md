@@ -2,124 +2,100 @@
 
 ## Project
 - Name: `ai-bot`
-- Goal: Гибкий AI-bot для выполнения разносторонних задач в зависимости от установленной конфигурации через мессенджер или API.
-- Current stage: MVP core — входящие сообщения по умолчанию через **BullMQ** (быстрый ACK вебхука); при `DIALOG_QUEUE_ENABLED=false` — синхронная обработка в вебхуке без Redis. HTTP-админка и JWT-аутентификация **сняты** (см. «Implemented» и Change Log).
+- Goal: Переиспользуемое ядро (платформа) для AI Telegram-ботов. Один процесс отдаёт N ботов через разные токены и webhook URL. Каждый бот = декларативный JSON-конфиг (BotConfig v2).
+- Current stage: Platform core complete (Phases 0-9 of `docs/PROMPT_PLAN.md`). 4 рабочих референс-сборки: `salon-admin`, `pipe-sales`, `knowledge-consultant`, `open-topics`.
 
 ## Implemented
-- Инициализирован backend-каркас (NestJS + TypeScript).
-- Добавлены `docker-compose.yml` (PostgreSQL + Redis; без устаревшего ключа `version`, без фиксированных `container_name` — имена контейнеров задаёт Compose) и `prisma/schema.prisma`.
-- **BullMQ** (`DialogQueueModule`): очередь `dialog-inbound`. После idempotency вебхук Telegram/WhatsApp ставит job и отвечает провайдеру; `DialogQueueWorkerService` в том же процессе вызывает `TelegramService` / `WhatsAppService` → `processInboundQueued` (LLM + отправка). `TelegramModule` / `WhatsAppModule` **экспортируют** сервисы для внедрения в воркер. Переменные: `DIALOG_QUEUE_ENABLED`, `DIALOG_QUEUE_WORKER_ENABLED`, `DIALOG_QUEUE_CONCURRENCY`, опционально `DIALOG_QUEUE_ATTEMPTS`, `DIALOG_QUEUE_BACKOFF_MS`, `REDIS_PASSWORD`. **Custom `jobId`**: `telegram-<messageId>`, `whatsapp-<id>` (символ `:` в id запрещён BullMQ). При ошибке `enqueue` — `IdempotencyService.revert` для повторной доставки вебхука.
-- Мониторинг очереди: `GET /health/queue` (счётчики Redis; при недоступности Redis — 503). В dev логируются постановка в очередь и события воркера `[Queue] job active` / `job completed`.
-- Добавлен WhatsApp webhook модуль (`GET` verify + `POST` receive/send text).
-- Добавлен Telegram webhook модуль (`POST` receive/send text и **`callback_query`** для inline-кнопок выбора сборки после **`/start`**).
-- Добавлены команды управления Telegram webhook и `.gitignore` для защиты `.env`.
-- Добавлен общий `DialogService` для единых ответов в Telegram/WhatsApp.
-- Добавлено сохранение входящих/исходящих сообщений в PostgreSQL через Prisma.
-- Применена первая Prisma миграция `init` к PostgreSQL.
-- Этап диалога хранится в `conversation.stage` (по умолчанию `contact`); переходы по ключевым словам из внешних JSON не используются.
-- Таблица `handoff_events` в схеме Prisma сохранена; основной поток `DialogService.process()` не создаёт записи handoff (раньше триггеры задавались в JSON sales-scripts).
-- Добавлена idempotency-обработка входящих сообщений (Telegram/WhatsApp) по `messageId`.
-- Добавлена проверка подписи WhatsApp webhook (`X-Hub-Signature-256` + `WHATSAPP_APP_SECRET`).
-- Применена Prisma миграция `add_idempotency` для таблицы обработанных входящих сообщений.
-- Подключена локальная LLM через  API (`POST {LLM_BASE_URL}/chat/completions`): **LM Studio** и аналоги; `model` резолвится один раз на процесс из **`GET …/models`** (первая модель без подстроки `embed` в `id`). Переменные **`LLM_MODEL` / `LLM_API_KEY`** не используются — достаточно **`LLM_BASE_URL`** (и опционально `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`, …). При выключенной или недоступной LLM — короткие встроенные шаблоны в `DialogService`.
-- Профили системного промпта (`PromptProfileModule`): в одном JSON со сборкой — поле **`promptProfile`** в `config/configurations/<id>.json` (предпочтительно). Если **`promptProfile` нет** — чтение `config/prompt-profiles/<llmPromptProfile>.json`. Идентификатор сценария — **`llmPromptProfile`** в сборке и fallback **`LLM_PROMPT_PROFILE`**. Лимит токенов на completion — **`LLM_MAX_TOKENS`** (если не задано в env — в `LlmService` по умолчанию **2048**, чтобы модели с `reasoning_content` не обрезались с пустым `content`).
-- **Конфигурации бота** (`BotConfigurationModule`, глобальный модуль): один файл `config/configurations/<slug>.json` (переменная **`BOT_CONFIGURATION`**, по умолчанию `default`). Идентификатор **нормализуется**: допустимы `knowledge-consultant` и `knowledge-consultant.json` в env (иначе путь стал бы `…/name.json.json`). В JSON: **`llmPromptProfile`**, опционально **`useRag`**, вложенный **`promptProfile`**, обязательный для рантайма блок **`dialog`**. Примеры: `knowledge-consultant` (короткий `dialog`), `open-topics` (полный `dialog`).
-- **Два формата `dialog` в сборке:** (1) **полный (legacy)** — как в `open-topics.json`: `staticPromptSuffix`, `systemPromptFrame`, шаблоны стадий, токенизация, RAG-оформление и т.д.; (2) **короткий (template)** — `systemPrompt.template` (плейсхолдеры вроде `{knowledgeBlock}`, `{channel}`, `{stageLine}`) и опционально `contextMessages`; остальные поля подставляются из кода (`src/modules/dialog/dialog-effective.defaults.ts`, `resolveEffectiveDialog` в `dialog-effective.ts`). В режиме **template** крупный текст из `promptProfile` (цели, запреты) **не** собирается в system prompt — только шаблон и история; при необходимости переносите правила в `template` или используйте полный `dialog`.
-- Тексты Telegram-онбординга базы знаний (`/start`, `/new`, `/done`, debounce-ack и strict-mode подсказки при пустой базе) вынесены из хардкода в `dialog.telegramKnowledgeOnboarding`; `TelegramService` и `DialogService` используют единый источник текста из effective-конфига (с дефолтами в `dialog-effective.defaults.ts`). Дополнительные строки для загрузки файлов: `documentOutsideKnowledgeMode`, `documentUnsupportedFormat`, `documentTooLarge`, `documentDownloadFailed`, `documentExtractFailed`, `documentExtractEmpty`.
-- **Telegram — выбор сборки после `/start`:** вместо одного приветственного текста показывается **`modeChoiceCaption`** и inline-кнопки; по **`callback_query`** выбранный slug (`knowledge-consultant` | `open-topics`) сохраняется в **`User.selectedBotConfigurationId`** (миграция **`20260510120000_user_selected_bot_configuration`**). Строки UI: **`modeButtonKnowledgeConsultant`**, **`modeButtonOpenTopics`**, **`modeApplied*`**. **`BotConfigurationService.resolveById()`** подгружает `config/configurations/<slug>.json` с кэшем; **`PromptProfileService.resolveProfileForBot(bot)`** резолвит профиль под эту сборку. Идемпотентность callback: канал `telegram`, ключ **`cb:<callback_query.id>`**. Пока пользователь не нажал кнопку, используется только глобальный **`BOT_CONFIGURATION`** из env.
-- **Ingestion документов (MVP):** модуль `DocumentIngestModule` / `DocumentIngestService` — извлечение текста из **PDF** (`pdf-parse` v2, `PDFParse#getText`), **DOCX** (`mammoth`), **TXT** (UTF-8, BOM). В режиме ожидания базы (`telegramKnowledgeAwaiting`) пользователь может прислать файл как документ в Telegram: бот скачивает через `getFile` и добавляет извлечённый текст в `knowledgeDraft`. Лимит размера файла — env **`TELEGRAM_DOCUMENT_MAX_BYTES`** (по умолчанию 20 MiB). Файл без предварительного `/new` получает ответ `documentOutsideKnowledgeMode`.
-- Схема полей `dialog` / union типов в TypeScript: **`src/modules/dialog/dialog.config.types.ts`** (это контракт для JSON, не сами строки конфигурации).
-- Расширенные поля профиля промпта: `persona`, `primaryGoals`, `servicesHighlight`, `neverDo`, `bookingAndContact`, `additionalStyleRules`, `language`, флаг **`humanLikeMode`** (более «живой» тон в **legacy**-сборке системного промпта). Парсинг в `PromptProfileService`; в **legacy**-режиме диалога сборка текста — `DialogService.buildLlmSystemPromptStaticParts` + `buildSystemPrompt`.
-- Во вложенном **`promptProfile`** можно задать **`retrieval`** как объект `{ topK, chunkSize, chunkOverlap }` — эквивалент плоских `retrievalTopK` / `retrievalChunkSize` / `retrievalChunkOverlap`.
-- Добавлен свободный режим диалога **`openTopicsMode`** в профиле промпта: без жёсткой рамки темы и без блока «правила продаж» в системном промпте; `DialogService.buildSystemPrompt` в этом режиме подставляет нейтральный маркер свободного диалога вместо этапа воронки.
-- Свободный режим: сборка `config/configurations/open-topics.json` (профиль внутри **`promptProfile`**); активация через **`BOT_CONFIGURATION=open-topics`** или кнопка «Свободные темы» в Telegram после **`/start`** (поле **`User.selectedBotConfigurationId`**).
-- Резолв пользователя для диалога: `findFirst` по `channel` + `externalId` и `create` с обработкой гонки `P2002` (вместо `upsert` по составному unique в типах клиента).
-- Логи цепочки сообщения в Telegram/WhatsApp: шаги `1/3`–`3/3` (получено → диалог → отправка в API), разбивка времени и total «webhook → ответ ушёл в канал»; только при `NODE_ENV=development` (`src/modules/shared/is-development.ts`).
-- `LLM_CONTEXT_MESSAGES` ограничивает глубину истории в запросе к LLM; `LLM_TIMEOUT_MS` — `AbortSignal.timeout` на HTTP-вызов провайдера, при срыве — встроенные шаблоны в `DialogService`.
-- Документация запуска: корневой `README.md` и этот файл; обзор потока — раздел «Архитектура / вебхуки» в [docs/README.md](README.md).
-- **RAG** (`RagModule`, `RagService`): опционально для сборки бота (`useRag` в `config/configurations/<id>.json`). Векторный поиск по тексту из `scopeFile` профиля: эмбеддинги `@xenova/transformers` (MiniLM), SQLite in-memory + `sqlite-vec` (`better-sqlite3`). При `useRag: true` `DialogService` вызывает `ragService.search`, иначе — лексический матч по чанкам. **INSERT в таблицу vec0:** после загрузки transformers в процесс известна ошибка sqlite-vec с целочисленным PK — в коде для `id` чанка используется **`BigInt`** (обход [sqlite-vec#270](https://github.com/asg017/sqlite-vec/issues/270)). Нативный **`better-sqlite3`** при смене версии Node пересобирать: `npm rebuild better-sqlite3`. `DialogModule` импортирует `RagModule`.
-- Режим **строгой базы знаний** в профиле промпта: `strictKnowledgeMode`, опциональный `scopeFile` (длинный текст в контекст LLM / индексация), `noKnowledgeReply` при отсутствии релевантных фрагментов.
-- В `DialogService` добавлен fallback для **глобальных запросов о документе** в strict-режиме: если лексический retrieval не нашёл пересечений токенов, но запрос похож на «перескажи/суммируй/о чем документ/что за документ/расскажи про документ», в контекст LLM подставляются стартовые чанки загруженной базы (`knowledgeScopeText`) вместо мгновенного `noKnowledgeReply`.
-- Оптимизация токенов в retrieval-подаче: `DialogService.retrieveKnowledgeContextDetailed` теперь ограничивает размер контекста знаний перед вставкой в system prompt (`retrievalPresentation.maxContextChars`) и подрезает отдельные фрагменты (`retrievalPresentation.maxChunkChars`), чтобы уменьшить prompt-size без отключения retrieval.
-- Добавлен in-memory кеш парсинга базы знаний в `DialogService`: чанки `knowledgeScopeText` переиспользуются по ключу (`bot.id` + chunk params + sha256 текста), чтобы не пересобирать токенизацию/чанкинг на каждый входящий Telegram message в strict knowledge режиме.
-- **Разговорный обход** strict-режима (`strictKnowledgeConversationalBypass` во вложенном **`promptProfile`** или в `config/prompt-profiles/*.json`): список regex-строк (флаг `u` при компиляции в `PromptProfileService`), `maxMessageLength`, опционально `strictKnowledgeConversationalPromptAddendum` — строки к system prompt. Дефолтные паттерны и текст доп. блока — `src/modules/prompt-profile/strict-knowledge-conversational.defaults.ts`. Важно: в JS **не использовать `\b` в паттернах под кириллицу** (word boundary только для ASCII-«слов»); при совпадении обхода поиск по БЗ для этого сообщения **не** вызывается, чтобы случайные чанки не тянули ответ «нет в базе».
-- Скрипты инфраструктуры: `npm run db:up` / `db:down` — `docker compose` для PostgreSQL и Redis. Подключение Prisma при старте: повторные попытки с паузой (`PRISMA_CONNECT_MAX_ATTEMPTS`, `PRISMA_CONNECT_RETRY_DELAY_MS`), чтобы пережить медленный старт контейнера.
-- **Админ API снят**: каталоги `src/modules/admin/` и `src/modules/auth/` удалены; в **`AppModule`** нет `AdminModule` / `AuthModule`. Эндпоинты вида `/admin/*` и JWT (**`POST /admin/auth/login`**, **`POST /admin/auth/refresh`**) не обслуживаются.
-- **Prisma** (миграция `20260424120000_admin_and_config_management` и последующие): в схеме по-прежнему есть **`AdminUser`**, **`Tenant`**, записи **`BotConfiguration`** / **`PromptProfile`** в БД; прод-поток бота **не** читает конфиг из этих таблиц — только **`BOT_CONFIGURATION`**, JSON в `config/configurations/*.json` и таблица **`User`** (клиенты каналов). Таблица **`SalesScript`** удалена миграцией `20260428120000_remove_sales_script`.
-- **`DialogService`**: **`composeSnapshot(profile, bot)`** собирает runtime-снимок; **`process()`** через **`resolveRuntimeSnapshotForUser`** подставляет сборку **`BotConfigurationService.resolveById(User.selectedBotConfigurationId)`** для Telegram-пользователя с заданным выбором, иначе — глобальный **`BOT_CONFIGURATION`**. Профиль берётся из **`PromptProfileService.resolveProfileForBot(bot)`**. Токенизация retrieval и границы чанков зависят от **`effectiveFor(bot)`**, а не только от env-сборки. Публичного HTTP для тестового диалога нет; **`runDiagnosticTurn`** принимает snapshot извне.
-- В **`.env.example`** могут остаться переменные **`JWT_*`** от старой админки — для текущего приложения не обязательны, пока JWT не вернут.
 
-## In Progress
-- Уточнение эскалации к живому менеджеру и уведомлений (без JSON-триггеров в репозитории).
-- Этап 1 из `docs/TODO.md`: пп.1-3 закрыты (ingestion txt/pdf/docx в Telegram); закрыт пункт «Старт бота» (выбор `knowledge-consultant` / `open-topics` после `/start`); в работе напоминания и отдельно Google Docs при необходимости.
+### BotConfig v2 — единый декларативный формат
+- `src/modules/bot-configuration/v2/` — zod-схема + адаптер + system-prompt-builder.
+- Поля: `persona` (role/language/tone/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
+- Адаптер собирает `dialog.systemPrompt.template` из декларативных полей; runtime читает один формат, без legacy ветки.
+- Файлы: `config/configurations/<id>.json` со `schemaVersion: 2`. Legacy v1 формат снесён в Phase 9a.
 
-## Next
-1. Настроить Telegram/WhatsApp production webhook URLs.
-2. Добавить уведомление менеджера при необходимости эскалации (новый канал, не завязанный на удалённые sales-scripts).
-3. Добавить retry/backoff для неуспешной отправки сообщений в каналы.
-4. Добавить базовые метрики по диалогам и стадиям в БД.
-5. При необходимости снова включить панель конфигурации: восстановить модули admin/auth или вынести CRUD в отдельный сервис; учесть модели Prisma `BotConfiguration` / `PromptProfile` при синхронизации с файлами.
+### Multi-bot Telegram routing
+- `POST /webhooks/telegram/:secret` → `BotConfigurationService.resolveByWebhookSecret(secret)` → pipeline с правильным `bot`.
+- `BotConfigurationService.discoverAll()` сканирует все `*.json` при старте, индексирует по `webhookSecret`.
+- `AsyncLocalStorage` (`telegram-bot-context.ts`) пробрасывает текущего bot в outbound (`sendMessage`, `editMessageText`, `getFile`, `sendChatAction`) — без явного параметра через 17+ сайтов.
+- Worker BullMQ восстанавливает контекст из `botId` в `DialogInboundJob`.
+- Legacy маршрут `POST /webhooks/telegram` сохранён для single-bot deploy (`BOT_CONFIGURATION` env + `TELEGRAM_BOT_TOKEN`).
+- Скрипт `scripts/telegram-webhook.mjs` поддерживает `set/info/delete [<bot-id>]` — массово или per-bot.
+
+### Dialog Pipeline (8 явных стадий)
+```
+[1] rate-limit → [2] save user msg → [3] safety-in (content)
+  → [4] FSM step → [5] snippet → [6] LLM (tools + streaming)
+  → [7] safety-out → [8] save assistant msg
+```
+Каждая стадия может ответить и завершить ход. Безопасность раньше LLM, FSM раньше snippet'а, snippet раньше LLM.
+
+### Слои runtime
+
+- **SnippetMatcherService** (`src/modules/snippets/`) — zero-token ответы. Три режима: `exact` (substring), `regex`, `keywords` (AND внутри группы, OR между). Per-bot кеш компилированных правил.
+- **ScriptRunnerService** (`src/modules/scripts/`) — FSM. Триггер по regex `intent[]`, последовательный сбор слотов (с опц. regex-валидацией), `confirm`-шаг, dispatch skill при подтверждении. Состояние в `Conversation.activeScript / activeScriptState / activeScriptSlots`. CANCEL/YES/NO детекторы используют explicit suffix `[\s,.!?]|$` (не `\b` — кириллица).
+- **SkillsRegistry + DomainDataService** (`src/modules/skills/`) — реестр через DI-токен `SKILL_PROVIDERS_TOKEN`. Реальные skills: `lookup_service` (salon), `lookup_product` (pipes), `book_slot` (FSM action — пишет в `Booking`). Данные: `config/data/<botId>/<entity>.json`.
+- **LlmService** (`src/modules/llm/`) — OpenAI-compatible (`/chat/completions`). Tool calls (function calling), SSE streaming с `stream_options.include_usage`. `completeWithTools` лупит до 4 итераций, на последней — без tools для финального текста. `onTextDelta` callback в `LlmCompleteOptions` для streaming.
+- **SafetyInService** (`src/modules/safety/`) — `checkRateLimit` (Redis sliding window per `{bot,channel,user}`), `checkContent` (injection-regex RU+EN + topic-keywords для `medical/legal/financial/self_harm/injection`). Injection-паттерны используют `[\p{L}\d_]+` (`\w` в JS не покрывает кириллицу даже с `/u`). Opt-in через `guardrails.safetyChecks`.
+- **SafetyOutService** — cap длины ответа (default 4000, override через `guardrails.maxReplyChars`).
+- **BotUsageService** (`src/modules/bot-usage/`) — событие на каждый ход: `kind ∈ {snippet, llm, no_llm_fallback, fsm, safety_block}`. Парсит `usage` из ответа LLM. `summarize({botId, sinceHours})` для `GET /health/usage?bot=<id>&hours=<n>`.
+- **DialogService** (`src/modules/dialog/`) — оркестратор pipeline. `process(input, { onLlmTextDelta? })` — стриминг callback прокидывается в LlmService.
+- **TelegramService** (`src/modules/telegram/`) — placeholder-сообщение при первой стрим-дельте, throttled `editMessageText` ≥500ms, typing-indicator каждые 4 сек, idempotency по `messageId`, серийная обработка per `chatId` через `inboundChains`.
+
+### Storage
+- **PostgreSQL** (Prisma): `User`, `Conversation` (+ `activeScript/State/Slots` для FSM), `Message`, `ProcessedInboundMessage` (idempotency), `Booking` (FSM result), `BotUsage`.
+- **Redis** — BullMQ `dialog-inbound` queue, per-user rate-limit (separate ioredis-коннект, fail-open).
+- **sqlite-vec** — RAG индекс (in-memory, опц., `useRag` в config).
+- Все legacy таблицы (`AdminUser`, `Tenant`, `BotConfiguration`, `PromptProfile`, `HandoffEvent`, ENUM `AdminRole`) удалены в Phase 9c миграцией `20260526150000_drop_legacy_models`.
+
+### Per-bot LLM tuning
+- `BotConfig.llm.{temperature, maxTokens, contextMessages}` прокидывается в `LlmService.complete(messages, options)`.
+- Резолв: per-call override → env (`LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_CONTEXT_MESSAGES`) → default.
+- Salon-admin: `temp=0.7` (тёплый). Pipe-sales: `temp=0.3` (точный). Knowledge-consultant: `temp=0.2`. Open-topics: `temp=0.8` (вариативный).
+
+### 4 референсных бота
+- **salon-admin** — администратор маникюрного салона. human-like. Snippets (`/help`, часы работы, прайс-редирект). Skill `lookup_service` для каталога. FSM `booking` (5 слотов: service/date/time/name/phone с regex-валидацией) → `book_slot` → запись в БД. Safety: `medical, injection`. Rate-limit 30/min.
+- **pipe-sales** — менеджер труб «Профильмет». neutral. Snippets (включая regex для «каталог»). Skill `lookup_product` (фильтр по material/type/diameter/wallThickness). Safety: `legal, financial, injection`. Rate-limit 40/min.
+- **knowledge-consultant** — formal, строгий по фактам. Guardrails: `neverInvent` нормы/числа/имена, `stickToScope`. Safety: `medical, legal, financial, injection`. `temperature=0.2`.
+- **open-topics** — свободный диалог, human-like, все safety-checks включая `self_harm`. `temperature=0.8`.
 
 ## Architecture Decisions
-- Единый слой каналов: адаптеры для каждого мессенджера.
-- Отдельный слой диалоговой логики: LLM + поле `conversation.stage` в БД; офлайн-fallback — встроенные шаблоны в коде.
-- Отдельный слой знаний/контента: FAQ, офферы, возражения.
-- Рамка LLM (компания, тема, запреты, опциональный `scopeFile`, режим «человечнее», strict/RAG и др.) — преимущественно во вложенном **`promptProfile`** в `config/configurations/<id>.json`; при необходимости — отдельный файл `config/prompt-profiles/<slug>.json`; длинный текст не хранить в `.env`.
-- Для режима «на любые темы» использовать профиль с `openTopicsMode=true` (сборка `open-topics`), а не `default`.
-- Переключение «какой бот запущен» — **`BOT_CONFIGURATION`** (slug файла без расширения или с суффиксом `.json`) → один JSON в `config/configurations/` задаёт **`llmPromptProfile`**, **`useRag`**, вложенный **`promptProfile`**, блок **`dialog`**; **`LLM_PROMPT_PROFILE`** — запасной идентификатор профиля, если в JSON не задан `llmPromptProfile`. В **Telegram** пользователь может переопределить slug для своего чата значением **`User.selectedBotConfigurationId`** (после **`/start`**); остальные каналы и пользователи без поля полагаются только на env.
-- Основной backend: NestJS (TypeScript), REST + webhook endpoints.
-- Хранение состояния и истории: PostgreSQL (через Prisma ORM).
-- Очереди: Redis + BullMQ — очередь входящих диалогов `dialog-inbound` (`DialogQueueModule`); опционально отдельный инстанс API с `DIALOG_QUEUE_WORKER_ENABLED=false` и выделенный воркер — по мере масштабирования.
-- `HealthModule` подключает `DialogQueueModule` для эндпоинта метрик очереди.
-- Прод-конфиг не зависит от HTTP-админки: `BotConfigurationService`, вебхуки и воркер очереди читают **`BOT_CONFIGURATION`** и JSON на диске. Таблицы `BotConfiguration` / `PromptProfile` в PostgreSQL — наследие миграций и возможного будущего CRUD, текущий рантайм их не использует.
-- Multi-tenant: в схеме есть **`Tenant`** и nullable **`tenantId`** у `BotConfiguration` / `PromptProfile`; резолв по тенанту в коде пока не включён.
+- **Один JSON = один бот.** Декларация в `config/configurations/<id>.json`. Без скрытой сборки из нескольких файлов.
+- **Multi-bot first-class.** Routing по URL secret; токен в env-переменной, имя которой задаётся в JSON. Один процесс — N ботов.
+- **Декларативные guardrails ≠ только текст.** safety-checks в коде дублируют текстовые правила system prompt: модель может быть взломана, программный фильтр — нет.
+- **Skills vs RAG.** Структурные данные (каталоги, услуги, прайсы) → skills через tool calling. Документы (свободный текст, регламенты) → RAG. Не смешивать.
+- **FSM scripts ≠ stage в БД.** Бронирование = state machine с slot-filling + validation, не «просто промпт».
+- **AsyncLocalStorage для bot context** в Telegram-стороне. Альтернатива — пробрасывать `bot` через 20+ сайтов — отвергнута.
+- **Pipeline стадии явные.** Каждая стадия может ответить и завершить ход.
+- **Versioning конфигов.** v1 legacy полностью снесён в Phase 9. Будущие изменения — `schemaVersion: 3+` с миграцией.
+- **Streaming через editMessageText.** Placeholder при первой дельте, throttled edit ≥500ms. Совместимо с tool-loop (стрим включается на финальной итерации с текстом).
 
 ## Risks / Open Questions
-- Выбор провайдера для WhatsApp (официальный API vs BSP).
-- Требования по хранению персональных данных.
-- Границы полномочий AI и правила эскалации человеку.
-- Выбор финального поставщика LLM и политика контроля затрат.
-- Диагностика с **`useRag: true`**: при несовпадении индекса `RagService` с выбранным профилем retrieval может быть нерепрезентативным (если вызывать `runDiagnosticTurn` вручную в коде/тестах).
-- **`RagService`** строит in-memory индекс при старте из профиля глобальной сборки **`BOT_CONFIGURATION`**; выбор другой сборки в Telegram (**`User.selectedBotConfigurationId`**) пока не создаёт отдельный индекс на пользователя — возможно расхождение RAG и профиля пользователя при **`useRag: true`** на нескольких сборках.
-- Нативные модули (**`better-sqlite3`**) и несовпадение **NODE_MODULE_VERSION** после смены Node: `npm rebuild better-sqlite3` или переустановка `node_modules`.
+- **RAG global index.** `RagService` строит индекс в памяти из глобального `BOT_CONFIGURATION` при старте. Для multi-bot с `useRag: true` на разных сборках — расхождение. Требуется per-bot индекс.
+- **WhatsApp multi-bot.** Канал работает single-bot; нет `channel.whatsapp` в v2. Параллельная реализация по аналогии с Telegram — todo.
+- **DB-backed configs.** Всё файловое. Нет CRUD-админа для онлайн-правки конфигов. Можно либо REST/JWT (решение было: не делать), либо построить бот-админ платформы.
+- **Personal KB bot pattern.** `/new /done` flow удалён в Phase 9b. Если понадобится — строить чисто на v2 + skills + RAG с user-uploaded data, без legacy User-полей.
+- **Pacing/split.** LLM-ответ обрезается на 4000 символов (Telegram-limit 4096). Split на несколько сообщений не реализован.
+- **Cost estimation.** `BotUsage` считает токены, но не стоимость (требуются прайсы провайдеров).
+- **Tenant isolation.** Сейчас `tenant ≈ bot`. Если придёт настоящий multi-tenant с разделением пользователей/доступа — нужно ввести `tenantId` в `User/Conversation/Message/Booking/BotUsage`.
+- **Native modules.** `better-sqlite3` пересобирать при смене Node: `npm rebuild better-sqlite3`.
+- **TELEGRAM_BOT_TOKEN env fallback.** Сохранён для legacy single-bot deploy через `POST /webhooks/telegram`. Окончательный снос — когда все продакшены перейдут на multi-bot маршрут.
 
 ## Change Log
-- 2026-05-10: Выбор режима сборки в Telegram после **`/start`**: inline-кнопки **`knowledge-consultant`** / **`open-topics`**, обработка **`callback_query`** в **`TelegramService`**, **`sendMessage`** с **`reply_markup`**. Prisma: **`User.selectedBotConfigurationId`**. **`BotConfigurationService.resolveById`**, **`PromptProfileService.resolveProfileForBot`**, **`DialogService.resolveRuntimeSnapshotForUser`** и per-bot токенизация/chunk boundaries; **`getTelegramKnowledgeOnboardingForExternalUser`** для текстов онбординга по выбранной сборке. Новые ключи в **`dialog.telegramKnowledgeOnboarding`** (`modeChoiceCaption`, `modeButton*`, `modeApplied*`) в типах и **`dialog-effective.defaults.ts`**. Удалён неиспользуемый **`defaultSnapshot`** / **`onModuleInit`** в **`DialogService`**. Документ **`docs/TODO.md`** (п. «Старт бота») отмечен выполненным.
-- 2026-05-09: Этап 1 (ingestion MVP): добавлены зависимости `pdf-parse`, `mammoth`; модуль `DocumentIngestModule` извлекает текст из PDF/DOCX/TXT. Расширен webhook Telegram (`document`, `caption`), `IncomingTelegramMessage` опционально содержит `document`. В режиме онбординга базы файл скачивается через Bot API (`getFile`), текст добавляется в черновик; без `/new` — `documentOutsideKnowledgeMode`. Env: `TELEGRAM_DOCUMENT_MAX_BYTES` (по умолчанию 20 MiB). В `dialog.telegramKnowledgeOnboarding` добавлены строки ошибок для файлов.
-- 2026-05-08: Этап 1 (продолжение): добавлен кеш `knowledgeChunks` в `DialogService` для переиспользования парсинга пользовательской базы знаний (`knowledgeScopeText`). При telegram strict-потоке runtime snapshot теперь берет чанки из кеша по хэшу текста и параметрам чанкинга; добавлен soft-limit кеша в памяти.
-- 2026-05-08: Этап 1 (продолжение): снижён объём knowledge-контекста в LLM prompt. В `dialog.retrievalPresentation` добавлены лимиты `maxContextChars` / `maxChunkChars`; `DialogService` теперь обрезает длинные retrieval-фрагменты и ограничивает суммарный размер блока знаний перед `buildSystemPrompt`. Для `knowledge-consultant` лимиты добавлены в `config/configurations/knowledge-consultant.json`.
-- 2026-05-08: Этап 1 (частично): вынесены тексты Telegram-онбординга из `TelegramService`/`DialogService` в `dialog.telegramKnowledgeOnboarding` (`dialog.config.types.ts`, `dialog-effective.defaults.ts`, `resolveEffectiveDialog`). Добавлен runtime-accessor `DialogService.getTelegramKnowledgeOnboarding()`, обновлён `knowledge-consultant.json`. Для legacy-конфигов добавлен fallback на дефолтные onboarding-тексты.
-- 2026-05-08: `DialogService` — улучшено понимание «вводных» запросов к загруженному документу после `/done`. Добавлен детектор глобального intent (в т.ч. `пересказ`, `суммируй`, `кратко`, `расскажи`, `опиши`, `о чем документ`, `что за документ`, `summary/overview/tl;dr`) и эвристика `intent + существительное документа` (`документ/текст/файл/база/материал`). Если обычный lexical retrieval пустой, берутся первые чанки `knowledgeScopeText`, чтобы бот мог дать общий пересказ вместо fallback «не нашлось подходящего фрагмента».
-- 2026-05-05: Конфиг диалога только в сборках **`config/configurations/*.json`**: блок **`dialog`** — либо полный (**`staticPromptSuffix`** + **`systemPromptFrame`**, как `open-topics`), либо короткий (**`systemPrompt.template`**, **`contextMessages`**; дефолты в **`dialog-effective.defaults.ts`**, резолв в **`dialog-effective.ts`**). Типы JSON: **`dialog.config.types.ts`**. В **`promptProfile`** поддержан вложенный **`retrieval`** `{ topK, chunkSize, chunkOverlap }`. **`BOT_CONFIGURATION`**: нормализация суффикса `.json` в **`BotConfigurationService`**. **RAG**: для INSERT в **vec0** после загрузки **transformers** — **`BigInt(id)`** (обход sqlite-vec + onnxruntime). Пример упрощённой сборки: **`knowledge-consultant.json`** (`useRag`, короткий `dialog`). Обновлён этот файл (**`DEVELOPMENT_CONTEXT.md`**).
-- 2026-05-05: Единый JSON конфигурации: в `config/configurations/*.json` опционально вложенный **`promptProfile`**; при отсутствии — fallback на `config/prompt-profiles/<llmPromptProfile>.json`. Удалён неиспользуемый модуль **`config-management/`** (раньше не импортировался в `AppModule`); переменная **`CONFIG_MGMT_CACHE_TTL_MS`** убрана из `.env.example`. **`DEVELOPMENT_CONTEXT.md`**: актуализированы разделы Implemented / Architecture / Next / Change Log.
-- 2026-05-05: `docs/README.md` — в схеме потока входящего сообщения убраны устаревшие упоминания HTTP-админки и `POST /admin/test-dialog`; описано переключение поведения через **`BOT_CONFIGURATION`** и JSON в `config/configurations/`, `config/prompt-profiles/`.
-- 2026-05-05: Удалены модули **`AdminModule`** и **`AuthModule`** (`src/modules/admin/`, `src/modules/auth/`): нет REST `/admin/configurations`, `/admin/prompt-profiles`, `/admin/test-dialog`, `/admin/auth/*`. В **`AppModule`** остались только модули каналов, диалога, очереди, RAG и т.д. **`DialogService`**: `composeSnapshot` / `runDiagnosticTurn` без публичного эндпоинта.
-- 2026-04-28: Документация LLM: `docs/README.md` — LM Studio, только `LLM_BASE_URL`, выбор модели из `/models` без embedding, `LLM_MAX_TOKENS` / reasoning; таблица «типичные проблемы». `DEVELOPMENT_CONTEXT.md` — то же в «Implemented» и этот пункт changelog.
-- 2026-04-28: Удалены sales-scripts: Prisma-модель и таблица `SalesScript`, REST `/admin/scripts`, поля `salesScriptsPath` / `salesScriptSlug` в типах и JSON сборок, файлы `scripts/**/sales-scripts.json`. `DialogService`: `composeSnapshot(profile, bot)`, встроенные шаблоны при отключённом LLM; основной поток не пишет `handoff_events`. Миграция `20260428120000_remove_sales_script`. Документация обновлена.
-- 2026-04-24: Админ-панель backend: `AdminModule` (CRUD `/admin/configurations`, `/admin/prompt-profiles`, `/admin/scripts`; `POST /admin/test-dialog`), `AuthModule` (JWT access/refresh, `AdminUser`, роли), `ConfigManagementModule` (разрешение бандла БД → файлы, опциональный кэш). Prisma: `AdminUser`, `Tenant`, `BotConfiguration`, `PromptProfile`, `SalesScript`; миграция `20260424120000_admin_and_config_management`. `DialogService`: `DialogRuntimeSnapshot`, `defaultSnapshot` для прод, `runDiagnosticTurn` для диагностики. `PromptProfileService`: `resolveFromPromptProfileJson`, `resolveProfileFromFilesystem`; в типах профиля — `scopeText`. `.env.example`: переменные JWT. После pull — `npx prisma migrate deploy`. *(Часть этого пункта отменена записью 2026-04-28: `SalesScript` и `/admin/scripts` удалены; REST-админка и `AuthModule` — записью 2026-05-05; **`ConfigManagementModule`** удалён записью 2026-05-05.)*
-- 2026-04-18: RAG (`RagModule`/`RagService`, `useRag` в конфиге бота); `DialogModule` импортирует `RagModule`. Режим консультанта по базе знаний: `strictKnowledgeMode`, разговорный обход без ложных отказов — паттерны в профиле или дефолты в `strict-knowledge-conversational.defaults.ts` (без `\b` для кириллицы; при обходе retrieval не вызывается). Смягчены тексты `noKnowledgeReply` / системного промпта при отсутствии фрагментов. Prisma: retry подключения к БД при старте; `npm run db:up` / `db:down`.
-- 2026-04-14: Добавлен «свободный режим» (`openTopicsMode`) для диалога на любые темы: сборка `open-topics` и профиль (изначально два JSON — `config/configurations/` и `config/prompt-profiles/`); обновлены `PromptProfileService`/типы и сборка системного промпта в `DialogService` (в open-topics без «рамки темы» и без блока sales-правил). *(Отдельный JSON sales-scripts для open-topics позже убран — см. 2026-04-28; объединение профиля и сборки — см. 2026-05-05.)*
-- 2026-04-14: **Очередь входящих (BullMQ) в продакшен-пути**: `dialog-inbound`, `processInboundQueued`, `IdempotencyService.revert` при сбое enqueue; `jobId` без `:` (`telegram-…`, `whatsapp-…`); экспорт `TelegramService` / `WhatsAppService`; `GET /health/queue`; dev-логи очереди; `HealthModule` → `DialogQueueModule`. Docker Compose: убраны `version` и жёсткие `container_name`. Параметры в `.env.example`. (Запись от 2026-04-09 про «Redis без воркера» устарела.)
-- 2026-04-14: Удалены таблица и модель Prisma `LeadState` (фактически дублировали последнее сообщение клиента; поля бюджета/сроков не использовались). Добавлена миграция `20260414120000_drop_lead_state`; убран `upsert` из `DialogService`. После pull — `npx prisma migrate deploy` (или `migrate dev`).
-- 2026-04-14: В блоке `handoff` JSON sales-скриптов ключ триггеров переименован: `rules` → `handOffTriggers`. *(Целиком JSON sales-scripts и handoff из основного потока удалены 2026-04-28.)*
-- 2026-04-13: Конфигурации бота (`BOT_CONFIGURATION`, `config/configurations/*.json`); расширенные поля профиля промпта и `humanLikeMode`; тестовые профили `test-saas` / `test-fitness` и сборка `daria-mokko`; обновлены `docs/README.md`.
-- 2026-04-09: План развития планировался в `docs/ROADMAP.md` (файл в текущем дереве репозитория отсутствует).
-- 2026-04-09: Уточнён статус Redis/BullMQ (инфра + зависимости; воркер в коде подключён позже — см. Change Log 2026-04-14); добавлен черновик «План развития»; обновлён Next п.1; стадия проекта в шапке.
-- 2026-04-09: Добавлен черновик `docs/BOT_ALGORITHM.md` (позже файл убран из репозитория; см. `docs/README.md`).
-- 2026-04-09: Учтены `LLM_CONTEXT_MESSAGES` и `LLM_TIMEOUT_MS` в `DialogService` / `LlmService`; в README — подсказки по ускорению LLM.
-- 2026-04-09: Логи обработки входящих сообщений Telegram/WhatsApp (этапы и тайминги) включены только в dev (`NODE_ENV=development`).
-- 2026-04-09: Рамка промпта вынесена из `.env` в сменные профили `config/prompt-profiles/*.json`, модуль `PromptProfileModule`, выбор `LLM_PROMPT_PROFILE`.
-- 2026-04-08: Добавлен `README.md` с инструкцией по запуску (Docker, Prisma, ngrok, Telegram/WhatsApp).
-- 2026-04-07: Инициализированы `PROMPT_PLAN.md` и `DEVELOPMENT_CONTEXT.md`.
-- 2026-04-07: Зафиксирован целевой стек в черновике `TECH_STACK.md` и обновлён roadmap (файлы позже могли быть перенесены или удалены из репозитория).
-- 2026-04-08: Создан MVP-каркас приложения (NestJS, Docker Compose, Prisma schema, health endpoint).
-- 2026-04-08: Подключен базовый WhatsApp webhook модуль и отправка текстовых ответов.
-- 2026-04-08: Подключен базовый Telegram webhook модуль и отправка текстовых ответов.
-- 2026-04-08: Добавлены `telegram:webhook:*` команды и загрузка `.env` в рантайме.
-- 2026-04-08: Реализован общий `DialogService` и запись входящих/исходящих сообщений в БД (Prisma).
-- 2026-04-08: Выполнен `prisma migrate dev --name init`, создана и применена первая миграция.
-- 2026-04-08: `DialogService` использовал внешний конфиг `scripts/sales-scripts.json` (тексты и правила). *(Заменено встроенными шаблонами; JSON удалён — 2026-04-28.)*
-- 2026-04-08: Реализован handoff (конфиг-триггеры, статус `HANDED_OFF`, запись в `handoff_events`). *(Запись handoff из основного потока отключена с 2026-04-28.)*
-- 2026-04-08: Добавлены idempotency (messageId) и валидация подписи WhatsApp webhook; применена миграция `add_idempotency`.
-- 2026-04-08: Добавлен `LlmService` (API) и генерация ответов в `DialogService` с fallback на шаблоны (тогда — JSON sales-scripts; с 2026-04-28 — встроенные строки в коде).
-- 2026-04-08: Расширен системный промпт (тема, запреты, файл scope) и опциональный `LLM_MAX_TOKENS`.
+
+Все Phase 0-9 выполнены 2026-05-26 (см. `docs/PROMPT_PLAN.md` для детального плана):
+
+- **Phase 9c — `1e233ae`** Drop dead Prisma models (`AdminUser/Tenant/BotConfiguration/PromptProfile/HandoffEvent/AdminRole`), миграция `20260526150000_drop_legacy_models`. Drop `strictKnowledgeMode` runtime branch в `DialogService` (dead с Phase 9b). Drop npm deps: `@nestjs/jwt, @nestjs/passport, bcrypt, passport, passport-jwt` + types. `.env.example` переписан под multi-bot.
+- **Phase 9b — `a059d6b`** Снос `/new /done` knowledge upload flow + mode-picker callback_query + document handling в Telegram. Удалены `User.{knowledgeScopeText, knowledgeDraft, telegramKnowledgeAwaiting, selectedBotConfigurationId}` (миграция `20260526140000_drop_knowledge_user_fields`). `TelegramService` переписан 773 → 297 строк. Удалён `DialogTelegramKnowledgeOnboarding` interface. `TelegramModule` больше не импортирует `DocumentIngestModule`.
+- **Phase 9a — `7c7914e`** Migrate `knowledge-consultant + open-topics` to v2. Drop legacy `DialogServiceConfig/DialogStaticPromptSuffix/DialogSystemPromptFrame/DialogStyleVariant`. Drop `buildLlmSystemPromptStaticParts` (~110 LoC). Drop v1-парсер в `BotConfigurationService.load` — теперь только `schemaVersion: 2`. ~380 LoC net deletion.
+- **Phase 8 — `f256b00`** LLM streaming. `LlmCompleteOptions.onTextDelta`. SSE-парсер `parseStreamingResponse`. `DialogService.process(input, progress?)`. `TelegramService`: placeholder + throttled `editMessageText` ≥500ms. `sendMessage` возвращает `messageId | null`.
+- **Phase 7 — `9667fb9`** Multi-bot Telegram routing. `channel.telegram` в BotConfig v2. `POST /webhooks/telegram/:secret`. `AsyncLocalStorage` для bot context. `BotConfigurationService.discoverAll/resolveByWebhookSecret/listAll`. Worker восстанавливает context из `botId` в job. `scripts/telegram-webhook.mjs` обновлён под multi-bot.
+- **Phase 6 — `216e57c`** Safety In/Out. Rate-limit (Redis sliding window, fail-open). Injection-regex (RU+EN, `[\p{L}\d_]+` вместо `\w`). Topic-keywords для 5 категорий. `guardrails.safetyChecks` opt-in. `SafetyOut` cap длины. Новый `kind: safety_block` в `BotUsage`.
+- **Phase 5 — `ea62243`** FSM scripts. `ScriptRunnerService` (slot-filling, validation, confirm, dispatch). DSL `scripts.{trigger.intent, slots, order, confirm, onConfirm, onCancel}`. Prisma миграция `20260526130000_scripts_and_bookings`: `Conversation.activeScript/State/Slots` + `Booking`. `book_slot` skill.
+- **Phase 4 — `9b5d824`** Skill contract + tool calling. `SkillsRegistry, DomainDataService, LookupServiceSkill, LookupProductSkill`. `LlmService.completeWithTools` с tool-loop (max 4 итерации). `BotConfig.skills`. Domain data в `config/data/<botId>/*.json`.
+- **Phase 3 — `37093ee`** Token meter. `BotUsage` модель + миграция `20260526120000_bot_usage`. `LlmService` парсит `usage`. `recordSnippet/recordLlm/recordNoLlmFallback`. `GET /health/usage`.
+- **Phase 2.5 — `aeccb9b`** Per-bot LLM tuning. `LlmCompleteOptions { temperature, maxTokens }`. Резолв per-call → env → default.
+- **Phase 2 — `12ea5da`** BotConfig v2 schema (zod). Адаптер v2 → `ResolvedBotConfiguration`. Два референса: salon-admin, pipe-sales.
+- **Phase 1 — `7d644d2`** Snippets layer (`@Global SnippetsModule`). `SnippetMatcherService` с тремя режимами и per-bot кешем. Fast-path в `DialogService.process()` до LLM.
+- **Phase 0 — `54d8c11`** `docs/PROMPT_PLAN.md` — план 10 фаз.
+
+История до этой ветки — в `git log` или предыдущих ревизиях этого файла. Ключевые точки до Phase 9: multi-mode bot с inline-выбором `/start`, `/new /done` knowledge upload flow, REST/JWT админ-панель — всё снесено в Phase 9.
