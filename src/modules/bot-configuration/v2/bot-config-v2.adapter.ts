@@ -1,4 +1,4 @@
-import type { DialogConfigMinimalFile } from "../../dialog/dialog.config.types";
+import type { DialogConfigFileJson } from "../../dialog/dialog.config.types";
 import type { PromptProfileFileJson } from "../../prompt-profile/prompt-profile.types";
 import type { ResolvedBotConfiguration } from "../bot-configuration.types";
 import type { BotConfigV2 } from "./bot-config-v2.types";
@@ -23,7 +23,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     // но эти три используются для логов и общей идентификации профиля.
   };
 
-  const dialog: DialogConfigMinimalFile = {
+  const dialog: DialogConfigFileJson = {
     systemPrompt: { template: buildSystemPromptFromV2(v2) },
     ...(v2.llm?.contextMessages !== undefined
       ? { contextMessages: v2.llm.contextMessages }

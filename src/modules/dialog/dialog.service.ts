@@ -81,13 +81,14 @@ export class DialogService {
   }
 
   composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
-    const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, bot);
     const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
     return {
       profile,
       bot,
-      llmSystemPromptPrefix: prefix,
-      llmSystemPromptSuffix: suffix,
+      // В v2 template-режиме prefix/suffix не используются (весь промпт в systemPromptTemplate).
+      // Поля оставлены в snapshot для backward compatibility с типом DialogRuntimeSnapshot.
+      llmSystemPromptPrefix: "",
+      llmSystemPromptSuffix: "",
       knowledgeChunks,
     };
   }
@@ -106,12 +107,11 @@ export class DialogService {
         ...base.profile,
         scopeText: scope,
       };
-      const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profileScoped, base.bot);
       return {
         profile: profileScoped,
         bot: base.bot,
-        llmSystemPromptPrefix: prefix,
-        llmSystemPromptSuffix: suffix,
+        llmSystemPromptPrefix: "",
+        llmSystemPromptSuffix: "",
         knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profileScoped, base.bot),
         disableRag: true,
       };
@@ -627,144 +627,17 @@ export class DialogService {
   ): string {
     const eff = this.effectiveFor(snap.bot);
     const knowledgeBlockRaw = knowledgeContext ?? "";
-
-    if (eff.systemKind === "template") {
-      const stageLine = snap.profile.openTopicsMode
-        ? eff.stageFrame.openTopicsStageLine
-        : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
-      return interpolateTemplate(eff.systemPromptTemplate, {
-        knowledgeBlock: knowledgeBlockRaw,
-        channel,
-        stage,
-        stageLine,
-        prefix: snap.llmSystemPromptPrefix,
-        suffix: snap.llmSystemPromptSuffix,
-      });
-    }
-
-    const frame = eff.systemPromptFrame;
-    const open = snap.profile.openTopicsMode;
-    const stageLine = open
-      ? frame.openTopicsStageLine
-      : interpolateTemplate(frame.funnelStageLineTemplate, { stage });
-    const knowledgeBlock = knowledgeContext ? `${frame.knowledgeBlockIntro}${knowledgeContext}` : "";
-    return interpolateTemplate(frame.assembledTemplate, {
-      prefix: snap.llmSystemPromptPrefix,
+    const stageLine = snap.profile.openTopicsMode
+      ? eff.stageFrame.openTopicsStageLine
+      : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
+    return interpolateTemplate(eff.systemPromptTemplate, {
+      knowledgeBlock: knowledgeBlockRaw,
       channel,
+      stage,
       stageLine,
+      prefix: snap.llmSystemPromptPrefix,
       suffix: snap.llmSystemPromptSuffix,
-      knowledgeBlock,
     });
-  }
-
-  private buildLlmSystemPromptStaticParts(
-    p: ResolvedLlmPromptProfile,
-    bot: ResolvedBotConfiguration,
-  ): { prefix: string; suffix: string } {
-    const eff = this.effectiveFor(bot);
-    if (eff.systemKind === "template") {
-      return { prefix: "", suffix: "" };
-    }
-    const suf = eff.staticPromptSuffix;
-    const company = p.companyName;
-    const topic = p.topic;
-    const forbidden = p.forbiddenTopics;
-    const scopeFromFile = p.scopeText;
-    const neverDo = p.neverDo ?? [];
-    const primaryGoals = p.primaryGoals ?? [];
-    const lang = p.language ?? suf.defaultLanguage;
-
-    const prefixLines: string[] = [];
-    if (p.persona) {
-      prefixLines.push(p.persona);
-    } else {
-      prefixLines.push(interpolateTemplate(suf.defaultPersonaTemplate, { company }));
-    }
-    const prefix = `${prefixLines.join("\n")}\n`;
-
-    const lines: string[] = [];
-    lines.push(interpolateTemplate(suf.mainLanguageLineTemplate, { lang }), "");
-
-    if (primaryGoals.length > 0) {
-      lines.push(
-        suf.primaryGoalsHeader,
-        ...primaryGoals.map((g) => `${suf.goalItemPrefix}${g}`),
-        "",
-      );
-    } else if (p.openTopicsMode) {
-      lines.push(suf.openTopicsPrimaryGoal, "");
-    } else {
-      lines.push(suf.funnelPrimaryGoal, "");
-    }
-
-    if (p.servicesHighlight) {
-      lines.push(suf.servicesHighlightHeader, p.servicesHighlight, "");
-    }
-
-    if (topic) {
-      lines.push(suf.topicHeader, topic, "", suf.topicOutOfScopeGuidance);
-    }
-
-    if (forbidden.length > 0) {
-      lines.push(
-        "",
-        suf.forbiddenSectionHeader,
-        ...forbidden.map((f) => `${suf.forbiddenItemPrefix}${f}`),
-      );
-    }
-
-    if (neverDo.length > 0) {
-      lines.push("", suf.neverDoSectionHeader, ...neverDo.map((f) => `${suf.neverDoItemPrefix}${f}`));
-    }
-
-    if (scopeFromFile) {
-      lines.push("", suf.scopeConnectedIntro);
-      if (p.strictKnowledgeMode) {
-        lines.push(...suf.strictKnowledgeBullets.map((b) => `- ${b}`));
-      }
-    }
-
-    if (p.bookingAndContact) {
-      lines.push("", suf.bookingSectionHeader, p.bookingAndContact);
-    }
-
-    if (p.humanLikeMode) {
-      lines.push(
-        "",
-        suf.humanLikeSectionHeader,
-        ...suf.humanLikeBullets.map((b) => `- ${b}`),
-      );
-    }
-
-    const styleLead = p.humanLikeMode ? suf.styleLeadHumanLike : suf.styleLeadDefault;
-
-    if (p.openTopicsMode) {
-      const ots = suf.openTopicsStyle;
-      lines.push(
-        "",
-        ots.sectionTitle,
-        styleLead,
-        ...ots.sharedBullets.map((b) => `- ${b}`),
-        `- ${p.humanLikeMode ? ots.lastBulletHumanLike : ots.lastBulletDefault}`,
-      );
-    } else {
-      const fs = suf.funnelStyle;
-      lines.push(
-        "",
-        fs.sectionTitle,
-        styleLead,
-        ...fs.sharedBullets.map((b) => `- ${b}`),
-        `- ${p.humanLikeMode ? fs.lastBulletHumanLike : fs.lastBulletDefault}`,
-      );
-    }
-
-    if (p.additionalStyleRules?.length) {
-      for (const rule of p.additionalStyleRules) {
-        lines.push(`${suf.additionalStyleRulePrefix}${rule}`);
-      }
-    }
-
-    return { prefix, suffix: lines.join("\n") };
   }
 
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */

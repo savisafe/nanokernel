@@ -4,14 +4,6 @@ import type { SnippetSpec } from "../snippets/snippet.types";
 import type { ScriptSpec } from "./v2/bot-config-v2.types";
 import type { SafetyCategory } from "../safety/safety.types";
 
-export interface BotConfigurationFileJson {
-  llmPromptProfile?: string | null;
-  useRag?: boolean | string | null;
-  promptProfile?: PromptProfileFileJson | null;
-  dialog?: DialogConfigFileJson | null;
-  snippets?: SnippetSpec[] | null;
-}
-
 export interface ResolvedBotLlmSettings {
   temperature?: number;
   maxTokens?: number;

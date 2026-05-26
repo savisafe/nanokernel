@@ -1,6 +1,6 @@
-import type { DialogServiceConfig } from "./dialog.config.types";
+import type { DialogSubsystemResolved } from "./dialog.config.types";
 
-export const DIALOG_SUBSYSTEM_DEFAULTS: Omit<DialogServiceConfig, "systemPromptFrame" | "staticPromptSuffix"> = {
+export const DIALOG_SUBSYSTEM_DEFAULTS: DialogSubsystemResolved = {
   diagnosticsDefaults: {
     stage: "contact",
     channel: "telegram",
