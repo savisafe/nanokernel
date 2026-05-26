@@ -6,14 +6,23 @@ import { PrismaService } from "../prisma/prisma.service";
 export class IdempotencyService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async tryProcess(channel: string, externalMessageId?: string): Promise<boolean> {
+  /**
+   * @param scope — chat-scope для канала (Telegram chatId, WhatsApp `from`). Нужен потому,
+   * что provider'ские messageId уникальны только в рамках чата: без scope два разных чата
+   * с одинаковым messageId маскируются друг за друга и второе сообщение тихо отбрасывается.
+   */
+  async tryProcess(
+    channel: string,
+    scope: string,
+    externalMessageId?: string,
+  ): Promise<boolean> {
     if (!externalMessageId) {
       return true;
     }
 
     try {
       await this.prisma.processedInboundMessage.create({
-        data: { channel, externalMessageId },
+        data: { channel, scope, externalMessageId },
       });
       return true;
     } catch (error) {
@@ -28,12 +37,16 @@ export class IdempotencyService {
   }
 
   /** Если постановка в очередь не удалась после tryProcess — чтобы провайдер мог повторить вебхук. */
-  async revert(channel: string, externalMessageId?: string): Promise<void> {
+  async revert(
+    channel: string,
+    scope: string,
+    externalMessageId?: string,
+  ): Promise<void> {
     if (!externalMessageId) {
       return;
     }
     await this.prisma.processedInboundMessage.deleteMany({
-      where: { channel, externalMessageId },
+      where: { channel, scope, externalMessageId },
     });
   }
 }

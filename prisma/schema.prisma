@@ -55,10 +55,13 @@ model Message {
 model ProcessedInboundMessage {
   id                String   @id @default(cuid())
   channel           String
+  /// chat-scope: Telegram chatId / WhatsApp from. Нужно потому, что provider'ские
+  /// messageId уникальны только в рамках чата.
+  scope             String   @default("")
   externalMessageId String
   createdAt         DateTime @default(now())
 
-  @@unique([channel, externalMessageId])
+  @@unique([channel, scope, externalMessageId])
 }
 
 /// Запись клиента (результат FSM-скрипта booking). Без FK на Conversation,

@@ -105,6 +105,7 @@ export class TelegramService {
 
     const shouldProcess = await this.idempotencyService.tryProcess(
       "telegram",
+      String(message.chatId),
       message.messageId?.toString(),
     );
     if (!shouldProcess) {
@@ -141,7 +142,11 @@ export class TelegramService {
           ...message,
         });
       } catch (e) {
-        await this.idempotencyService.revert("telegram", message.messageId?.toString());
+        await this.idempotencyService.revert(
+          "telegram",
+          String(message.chatId),
+          message.messageId?.toString(),
+        );
         throw e;
       }
       if (dev) {

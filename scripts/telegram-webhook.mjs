@@ -96,7 +96,8 @@ async function runForBot(bot, command) {
       console.error(`  [${bot.id}] TELEGRAM_WEBHOOK_BASE_URL not set — skip`);
       return;
     }
-    const url = `${baseUrl.replace(/\/$/, "")}/webhooks/telegram/${bot.webhookSecret}`;
+    const root = baseUrl.replace(/\/$/, "").replace(/\/webhooks\/telegram$/, "");
+    const url = `${root}/webhooks/telegram/${bot.webhookSecret}`;
     const body = { url };
     if (bot.apiSecretToken) body.secret_token = bot.apiSecretToken;
     const data = await api(bot.token, "setWebhook", body);
