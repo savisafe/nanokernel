@@ -165,7 +165,10 @@ export class DialogService {
     return { replyText, stage: nextStage, diagnostics };
   }
 
-  async process(input: DialogInput): Promise<DialogOutput> {
+  async process(
+    input: DialogInput,
+    progress?: { onLlmTextDelta?: (text: string) => void | Promise<void> },
+  ): Promise<DialogOutput> {
     const { conversation, user } = await this.getOrCreateConversation(
       input.channel,
       input.externalUserId,
@@ -287,6 +290,7 @@ export class DialogService {
       templateReply,
       input.text,
       snap,
+      progress?.onLlmTextDelta,
     );
     const safeOut = this.safetyOut.apply(rawReply, snap.bot);
     const replyText = safeOut.text;
@@ -420,8 +424,17 @@ export class DialogService {
     templateFallback: string,
     userText: string,
     snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
   ): Promise<string> {
-    const r = await this.tryLlmReplyCore(conversationId, stage, channel, templateFallback, userText, snap);
+    const r = await this.tryLlmReplyCore(
+      conversationId,
+      stage,
+      channel,
+      templateFallback,
+      userText,
+      snap,
+      onTextDelta,
+    );
     return r.replyText;
   }
 
@@ -443,6 +456,7 @@ export class DialogService {
     templateFallback: string,
     userText: string,
     snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
   ): Promise<{
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
@@ -503,10 +517,14 @@ export class DialogService {
     ];
 
     const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
+    const llmOptions = {
+      ...(snap.bot.llm ?? {}),
+      ...(onTextDelta ? { onTextDelta } : {}),
+    };
     const out = enabledSkills.length > 0
       ? await this.llmService.completeWithTools(
           messages,
-          snap.bot.llm,
+          llmOptions,
           enabledSkills.map((s) => this.skills.toToolSpec(s)),
           async (name, args) => {
             const skill = this.skills.get(name);
@@ -524,7 +542,7 @@ export class DialogService {
             return result.data;
           },
         )
-      : await this.llmService.complete(messages, snap.bot.llm);
+      : await this.llmService.complete(messages, llmOptions);
     if (out) {
       await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
       if (isDevelopment()) {

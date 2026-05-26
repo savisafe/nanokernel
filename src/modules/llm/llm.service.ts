@@ -22,6 +22,13 @@ export interface LlmCompleteOptions {
   temperature?: number;
   /** Per-bot override; fallback — env LLM_MAX_TOKENS, далее без лимита. */
   maxTokens?: number;
+  /**
+   * Callback для дельт текста при streaming-режиме (только если задан).
+   * Получает накопленный текст текущей итерации (для completeWithTools — текст
+   * текущего шага tool-loop'а; при переходах между итерациями буфер сбрасывается).
+   * Реализация callback'а должна сама throttle'ить дорогие операции (edit message).
+   */
+  onTextDelta?: (accumulatedText: string) => void | Promise<void>;
 }
 
 export interface LlmCompleteResult {
@@ -167,6 +174,7 @@ export class LlmService {
 
     const maxTokens = this.resolveMaxTokens(options?.maxTokens);
     const temperature = this.resolveTemperature(options?.temperature);
+    const useStream = typeof options?.onTextDelta === "function";
 
     const url = `${baseUrl}/chat/completions`;
     const body: Record<string, unknown> = {
@@ -188,6 +196,11 @@ export class LlmService {
       }));
       body.tool_choice = "auto";
     }
+    if (useStream) {
+      body.stream = true;
+      // Стандартная OpenAI-опция: usage в финальном chunk при stream.
+      body.stream_options = { include_usage: true };
+    }
 
     if (this.shouldLogLlmDev()) {
       const payload = this.formatMessagesForDevLog(messages);
@@ -195,6 +208,7 @@ export class LlmService {
         `LLM → ${url} model=${model} messages=${messages.length} temperature=${temperature}` +
           (maxTokens != null ? ` max_tokens=${maxTokens}` : "") +
           (tools && tools.length > 0 ? ` tools=${tools.length}` : "") +
+          (useStream ? " stream=true" : "") +
           `\n${JSON.stringify(payload, null, 2)}`,
       );
     }
@@ -224,57 +238,10 @@ export class LlmService {
         return null;
       }
 
-      const data = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string | null;
-            tool_calls?: LlmToolCall[];
-          };
-          finish_reason?: string;
-        }>;
-        usage?: {
-          prompt_tokens?: number;
-          completion_tokens?: number;
-          total_tokens?: number;
-        };
-        model?: string;
-      };
-
-      const first = data.choices?.[0];
-      const rawText = first?.message?.content;
-      const text = typeof rawText === "string" ? rawText.trim() : undefined;
-      const toolCalls = first?.message?.tool_calls;
-
-      if (this.shouldLogLlmDev()) {
-        if (toolCalls && toolCalls.length > 0) {
-          this.logger.debug(
-            `LLM ← tool_calls: ${toolCalls
-              .map((t) => `${t.function.name}(${t.function.arguments})`)
-              .join(", ")}`,
-          );
-        } else if (text) {
-          const preview = text.length > 500 ? `${text.slice(0, 500)}… (${text.length} chars)` : text;
-          this.logger.debug(`LLM ← reply preview:\n${preview}`);
-        }
+      if (useStream) {
+        return this.parseStreamingResponse(response, model, options?.onTextDelta);
       }
-
-      const usage =
-        data.usage &&
-        (data.usage.prompt_tokens !== undefined || data.usage.completion_tokens !== undefined)
-          ? {
-              promptTokens: data.usage.prompt_tokens,
-              completionTokens: data.usage.completion_tokens,
-              totalTokens: data.usage.total_tokens,
-            }
-          : undefined;
-
-      return {
-        text,
-        toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-        usage,
-        model: data.model ?? model,
-        finishReason: first?.finish_reason,
-      };
+      return this.parseNonStreamingResponse(response, model);
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
       if (name === "TimeoutError" || name === "AbortError") {
@@ -286,6 +253,192 @@ export class LlmService {
       }
       return null;
     }
+  }
+
+  private async parseNonStreamingResponse(
+    response: Response,
+    fallbackModel: string | undefined,
+  ): Promise<ChatChoice | null> {
+    const data = (await response.json()) as {
+      choices?: Array<{
+        message?: { content?: string | null; tool_calls?: LlmToolCall[] };
+        finish_reason?: string;
+      }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      model?: string;
+    };
+    const first = data.choices?.[0];
+    const rawText = first?.message?.content;
+    const text = typeof rawText === "string" ? rawText.trim() : undefined;
+    const toolCalls = first?.message?.tool_calls;
+
+    if (this.shouldLogLlmDev()) {
+      if (toolCalls && toolCalls.length > 0) {
+        this.logger.debug(
+          `LLM ← tool_calls: ${toolCalls
+            .map((t) => `${t.function.name}(${t.function.arguments})`)
+            .join(", ")}`,
+        );
+      } else if (text) {
+        const preview = text.length > 500 ? `${text.slice(0, 500)}… (${text.length} chars)` : text;
+        this.logger.debug(`LLM ← reply preview:\n${preview}`);
+      }
+    }
+
+    const usage =
+      data.usage &&
+      (data.usage.prompt_tokens !== undefined || data.usage.completion_tokens !== undefined)
+        ? {
+            promptTokens: data.usage.prompt_tokens,
+            completionTokens: data.usage.completion_tokens,
+            totalTokens: data.usage.total_tokens,
+          }
+        : undefined;
+
+    return {
+      text,
+      toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+      usage,
+      model: data.model ?? fallbackModel,
+      finishReason: first?.finish_reason,
+    };
+  }
+
+  /**
+   * SSE-парсер OpenAI-совместимого streaming.
+   * Накапливает content + tool_calls (по index), вызывает onTextDelta на каждом
+   * новом content-куске. usage приходит в финальном chunk (stream_options.include_usage).
+   */
+  private async parseStreamingResponse(
+    response: Response,
+    fallbackModel: string | undefined,
+    onTextDelta: ((text: string) => void | Promise<void>) | undefined,
+  ): Promise<ChatChoice | null> {
+    if (!response.body) {
+      this.logger.warn("LLM stream response has no body");
+      return null;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    const toolCallsByIndex = new Map<number, LlmToolCall>();
+    let usage: ChatChoice["usage"];
+    let model: string | undefined;
+    let finishReason: string | undefined;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line || !line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          let chunk: {
+            choices?: Array<{
+              delta?: {
+                content?: string | null;
+                tool_calls?: Array<{
+                  index?: number;
+                  id?: string;
+                  type?: "function";
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+              finish_reason?: string;
+            }>;
+            usage?: {
+              prompt_tokens?: number;
+              completion_tokens?: number;
+              total_tokens?: number;
+            };
+            model?: string;
+          };
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          if (chunk.model && !model) model = chunk.model;
+          if (chunk.usage) {
+            usage = {
+              promptTokens: chunk.usage.prompt_tokens,
+              completionTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+            };
+          }
+          const choice = chunk.choices?.[0];
+          if (!choice) continue;
+          if (choice.finish_reason) finishReason = choice.finish_reason;
+          const delta = choice.delta;
+          if (!delta) continue;
+          if (typeof delta.content === "string" && delta.content.length > 0) {
+            text += delta.content;
+            if (onTextDelta) {
+              try {
+                await onTextDelta(text);
+              } catch (e) {
+                this.logger.debug(
+                  `onTextDelta threw: ${e instanceof Error ? e.message : String(e)}`,
+                );
+              }
+            }
+          }
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              const acc = toolCallsByIndex.get(idx) ?? {
+                id: "",
+                type: "function",
+                function: { name: "", arguments: "" },
+              };
+              if (tc.id) acc.id = tc.id;
+              if (tc.function?.name) acc.function.name += tc.function.name;
+              if (tc.function?.arguments) acc.function.arguments += tc.function.arguments;
+              toolCallsByIndex.set(idx, acc);
+            }
+          }
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+
+    const toolCalls = [...toolCallsByIndex.values()].filter((tc) => tc.function.name);
+    const trimmedText = text.trim();
+
+    if (this.shouldLogLlmDev()) {
+      if (toolCalls.length > 0) {
+        this.logger.debug(
+          `LLM ← (stream) tool_calls: ${toolCalls
+            .map((t) => `${t.function.name}(${t.function.arguments})`)
+            .join(", ")}`,
+        );
+      } else if (trimmedText) {
+        const preview =
+          trimmedText.length > 500
+            ? `${trimmedText.slice(0, 500)}… (${trimmedText.length} chars)`
+            : trimmedText;
+        this.logger.debug(`LLM ← (stream) reply preview:\n${preview}`);
+      }
+    }
+
+    return {
+      text: trimmedText.length > 0 ? trimmedText : undefined,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      usage,
+      model: model ?? fallbackModel,
+      finishReason,
+    };
   }
 
   private parseToolArguments(raw: string | undefined): Record<string, unknown> {

@@ -303,13 +303,42 @@ export class TelegramService implements OnModuleDestroy {
     const flowT0 = flowStarted ?? (dev ? performance.now() : 0);
     const dialogStarted = dev ? performance.now() : 0;
     const stopTyping = this.startTypingIndicator(message.chatId);
+
+    // Streaming UX: первая дельта LLM → placeholder-сообщение, далее throttled
+    // editMessageText каждые >=500ms. Если LLM-вызова нет (snippet/FSM/safety hit)
+    // — placeholderId остаётся null и финальный текст уходит обычным sendMessage.
+    let placeholderId: number | null = null;
+    let lastEditAt = 0;
+    let lastShown = "";
+    const MIN_EDIT_INTERVAL_MS = 500;
+    const MAX_DISPLAY_CHARS = 4000;
+    const onLlmTextDelta = async (text: string): Promise<void> => {
+      if (!text) return;
+      const sliced = text.length > MAX_DISPLAY_CHARS ? text.slice(0, MAX_DISPLAY_CHARS) : text;
+      const now = Date.now();
+      if (placeholderId === null) {
+        placeholderId = await this.sendMessage(message.chatId, sliced);
+        lastShown = sliced;
+        lastEditAt = now;
+        return;
+      }
+      if (now - lastEditAt < MIN_EDIT_INTERVAL_MS) return;
+      if (sliced === lastShown) return;
+      lastEditAt = now;
+      lastShown = sliced;
+      await this.editMessageText(message.chatId, placeholderId, sliced);
+    };
+
     let result: DialogOutput;
     try {
-      result = await this.dialogService.process({
-        channel: "telegram",
-        externalUserId: String(message.chatId),
-        text: message.text,
-      });
+      result = await this.dialogService.process(
+        {
+          channel: "telegram",
+          externalUserId: String(message.chatId),
+          text: message.text,
+        },
+        { onLlmTextDelta },
+      );
     } finally {
       stopTyping();
     }
@@ -321,12 +350,27 @@ export class TelegramService implements OnModuleDestroy {
     }
 
     const sendStarted = dev ? performance.now() : 0;
-    const sent = await this.sendMessage(message.chatId, result.replyText);
+    const finalText = result.replyText;
+    const sliced =
+      finalText.length > MAX_DISPLAY_CHARS ? finalText.slice(0, MAX_DISPLAY_CHARS) : finalText;
+    let sent: boolean;
+    if (placeholderId !== null) {
+      if (sliced !== lastShown) {
+        sent = await this.editMessageText(message.chatId, placeholderId, sliced);
+      } else {
+        // Финальный текст уже отображён последним delta-edit'ом.
+        sent = true;
+      }
+    } else {
+      const id = await this.sendMessage(message.chatId, finalText);
+      sent = id !== null;
+    }
     if (dev) {
       const sendMs = Math.round(performance.now() - sendStarted);
       const totalMs = Math.round(performance.now() - flowT0);
+      const mode = placeholderId !== null ? "stream-edit" : "send";
       this.logger.log(
-        `[Telegram] 3/3 ${sent ? "reply sent to bot" : "reply NOT sent (see errors above)"} chatId=${message.chatId} in ${sendMs}ms | total ${totalMs}ms (webhook → user sees message)`,
+        `[Telegram] 3/3 ${sent ? "reply sent" : "reply NOT sent (see errors above)"} chatId=${message.chatId} via=${mode} in ${sendMs}ms | total ${totalMs}ms (webhook → user sees message)`,
       );
     }
   }
@@ -571,15 +615,20 @@ export class TelegramService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Возвращает message_id отправленного сообщения (для editMessageText), либо null
+   * при ошибке. Большинство callers игнорят результат — это нормально, falsy
+   * (null/0) при ошибке всё ещё ведёт себя как старый boolean false.
+   */
   async sendMessage(
     chatId: number,
     text: string,
     options?: { replyMarkup?: Record<string, unknown> },
-  ): Promise<boolean> {
+  ): Promise<number | null> {
     const token = resolveTelegramToken();
     if (!token) {
       this.logger.warn("Telegram token not resolved (channel.telegram.tokenEnv or TELEGRAM_BOT_TOKEN)");
-      return false;
+      return null;
     }
 
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -601,9 +650,49 @@ export class TelegramService implements OnModuleDestroy {
     if (!response.ok) {
       const errText = await response.text();
       this.logger.error(`Telegram send failed: ${response.status} ${errText}`);
+      return null;
+    }
+    try {
+      const json = (await response.json()) as { result?: { message_id?: number } };
+      const id = json.result?.message_id;
+      return typeof id === "number" ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * editMessageText — для streaming-обновления placeholder-сообщения.
+   * Возвращает true при успехе. Игнорирует "message is not modified" ошибки
+   * (нормально для no-op edit при дребезге throttle'а).
+   */
+  async editMessageText(chatId: number, messageId: number, text: string): Promise<boolean> {
+    const token = resolveTelegramToken();
+    if (!token) return false;
+    const url = `https://api.telegram.org/bot${token}/editMessageText`;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId, text }),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        if (errText.includes("message is not modified")) {
+          return true;
+        }
+        this.logger.verbose(
+          `Telegram editMessageText failed: ${response.status} ${errText}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (e) {
+      this.logger.verbose(
+        `Telegram editMessageText error: ${e instanceof Error ? e.message : String(e)}`,
+      );
       return false;
     }
-    return true;
   }
 
   private startTypingIndicator(chatId: number): () => void {
