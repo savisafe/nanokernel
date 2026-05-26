@@ -119,3 +119,21 @@ model AdminUser {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }
+
+/// События для observability и биллинга: каждый ход = одна запись.
+/// kind: 'snippet' (ответ без LLM), 'llm' (вызов модели), 'no_llm_fallback' (LLM выключен/упал).
+model BotUsage {
+  id               String   @id @default(cuid())
+  botId            String
+  conversationId   String?
+  kind             String
+  snippetId        String?
+  promptTokens     Int?
+  completionTokens Int?
+  model            String?
+  createdAt        DateTime @default(now())
+
+  @@index([botId, createdAt])
+  @@index([createdAt])
+  @@index([botId, kind, createdAt])
+}

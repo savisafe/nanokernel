@@ -10,6 +10,7 @@ import { TelegramModule } from "./telegram/telegram.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { RagModule } from "./rag/rag.module";
 import { SnippetsModule } from "./snippets/snippets.module";
+import { BotUsageModule } from "./bot-usage/bot-usage.module";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SnippetsModule } from "./snippets/snippets.module";
     IdempotencyModule,
     LlmModule,
     SnippetsModule,
+    BotUsageModule,
     DialogModule,
     DialogQueueModule,
     HealthModule,

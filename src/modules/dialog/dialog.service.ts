@@ -10,6 +10,7 @@ import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
 import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
+import { BotUsageService } from "../bot-usage/bot-usage.service";
 import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
@@ -49,6 +50,7 @@ export class DialogService {
     private readonly botConfiguration: BotConfigurationService,
     private readonly ragService: RagService,
     private readonly snippetMatcher: SnippetMatcherService,
+    private readonly botUsage: BotUsageService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
@@ -205,6 +207,7 @@ export class DialogService {
       if (isDevelopment()) {
         this.logger.debug(`snippet hit bot=${snap.bot.id} id=${snippetHit.id} (no LLM call)`);
       }
+      await this.botUsage.recordSnippet(snap.bot.id, conversation.id, snippetHit.id);
       await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: { stage: conversation.stage, status: "ACTIVE" },
@@ -388,6 +391,7 @@ export class DialogService {
   }> {
     const dialogCfg = this.effectiveFor(snap.bot);
     if (!this.llmService.isEnabled()) {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
         replyText: templateFallback,
         diagnostics: await this.buildDiagnosticsForDisabledLlm(snap, stage, channel),
@@ -417,6 +421,7 @@ export class DialogService {
       const system =
         this.buildSystemPrompt(stage, channel, undefined, snap) +
         (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
         replyText,
         diagnostics: {
@@ -440,7 +445,17 @@ export class DialogService {
     ];
 
     const out = await this.llmService.complete(messages, snap.bot.llm);
-    const replyText = out ?? templateFallback;
+    if (out) {
+      await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
+      if (isDevelopment()) {
+        const p = out.usage?.promptTokens ?? "?";
+        const c = out.usage?.completionTokens ?? "?";
+        this.logger.debug(`llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"}`);
+      }
+    } else {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
+    }
+    const replyText = out?.text ?? templateFallback;
     return {
       replyText,
       diagnostics: {

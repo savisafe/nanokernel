@@ -12,6 +12,16 @@ export interface LlmCompleteOptions {
   maxTokens?: number;
 }
 
+export interface LlmCompleteResult {
+  text: string;
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
+  model?: string;
+}
+
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
@@ -21,7 +31,7 @@ export class LlmService {
     return v === "true" || v === "1" || v === "yes";
   }
 
-  async complete(messages: LlmChatMessage[], options?: LlmCompleteOptions): Promise<string | null> {
+  async complete(messages: LlmChatMessage[], options?: LlmCompleteOptions): Promise<LlmCompleteResult | null> {
     if (!this.isEnabled()) {
       return null;
     }
@@ -79,13 +89,30 @@ export class LlmService {
 
       const data = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+        };
+        model?: string;
       };
       const text = data.choices?.[0]?.message?.content?.trim();
       if (this.shouldLogLlmDev() && text) {
         const preview = text.length > 500 ? `${text.slice(0, 500)}… (${text.length} chars)` : text;
         this.logger.debug(`LLM ← reply preview:\n${preview}`);
       }
-      return text && text.length > 0 ? text : null;
+      if (!text || text.length === 0) {
+        return null;
+      }
+      const usage =
+        data.usage && (data.usage.prompt_tokens !== undefined || data.usage.completion_tokens !== undefined)
+          ? {
+              promptTokens: data.usage.prompt_tokens,
+              completionTokens: data.usage.completion_tokens,
+              totalTokens: data.usage.total_tokens,
+            }
+          : undefined;
+      return { text, usage, model: data.model ?? model };
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
       if (name === "TimeoutError" || name === "AbortError") {
