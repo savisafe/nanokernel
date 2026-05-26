@@ -8,6 +8,8 @@ import {
   BotConfigurationFileJson,
   ResolvedBotConfiguration,
 } from "./bot-configuration.types";
+import { adaptV2ToResolved } from "./v2/bot-config-v2.adapter";
+import { botConfigV2Schema } from "./v2/bot-config-v2.types";
 
 @Injectable()
 export class BotConfigurationService implements OnModuleInit {
@@ -58,14 +60,26 @@ export class BotConfigurationService implements OnModuleInit {
       `${configurationId}.json`,
     );
 
-    let raw: BotConfigurationFileJson = {};
+    let raw: BotConfigurationFileJson & { schemaVersion?: number } = {};
     try {
       const content = readFileSync(filePath, "utf8");
-      raw = JSON.parse(content) as BotConfigurationFileJson;
+      raw = JSON.parse(content) as BotConfigurationFileJson & { schemaVersion?: number };
     } catch (e) {
       this.logger.warn(
         `Configuration file missing or invalid (${filePath}), using env/default paths: ${e instanceof Error ? e.message : String(e)}`,
       );
+    }
+
+    if (raw.schemaVersion === 2) {
+      const parsed = botConfigV2Schema.safeParse(raw);
+      if (!parsed.success) {
+        throw new Error(
+          `BotConfig v2 invalid (${filePath}):\n${parsed.error.issues
+            .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
+            .join("\n")}`,
+        );
+      }
+      return adaptV2ToResolved(configurationId, parsed.data);
     }
 
     const llmPromptProfile =
