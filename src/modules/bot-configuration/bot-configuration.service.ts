@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
 import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
+import type { SnippetSpec } from "../snippets/snippet.types";
 import {
   BotConfigurationFileJson,
   ResolvedBotConfiguration,
@@ -81,6 +82,7 @@ export class BotConfigurationService implements OnModuleInit {
 
     const promptProfile = this.extractEmbeddedPromptProfile(raw.promptProfile);
     const dialog = this.extractDialog(raw.dialog);
+    const snippets = this.extractSnippets(raw.snippets);
 
     return {
       id: configurationId,
@@ -88,7 +90,28 @@ export class BotConfigurationService implements OnModuleInit {
       useRag,
       ...(promptProfile ? { promptProfile } : {}),
       ...(dialog ? { dialog } : {}),
+      ...(snippets ? { snippets } : {}),
     };
+  }
+
+  private extractSnippets(value: BotConfigurationFileJson["snippets"]): SnippetSpec[] | undefined {
+    if (!Array.isArray(value) || value.length === 0) {
+      return undefined;
+    }
+    const filtered: SnippetSpec[] = [];
+    for (const item of value) {
+      if (
+        item &&
+        typeof item === "object" &&
+        typeof item.id === "string" &&
+        typeof item.reply === "string" &&
+        Array.isArray(item.match) &&
+        (item.mode === "exact" || item.mode === "regex" || item.mode === "keywords")
+      ) {
+        filtered.push(item);
+      }
+    }
+    return filtered.length > 0 ? filtered : undefined;
   }
 
   private extractDialog(value: BotConfigurationFileJson["dialog"]): DialogConfigFileJson | undefined {

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma, User } from "@prisma/client";
 import { LlmChatMessage, LlmService } from "../llm/llm.service";
@@ -9,6 +9,8 @@ import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
+import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
+import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
 import { interpolateTemplate } from "./dialog-template.utils";
@@ -24,6 +26,7 @@ import {
 
 @Injectable()
 export class DialogService {
+  private readonly logger = new Logger(DialogService.name);
 
   private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
       //TODO ru hardcode, move
@@ -45,12 +48,22 @@ export class DialogService {
     private readonly promptProfile: PromptProfileService,
     private readonly botConfiguration: BotConfigurationService,
     private readonly ragService: RagService,
+    private readonly snippetMatcher: SnippetMatcherService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
 
   getTelegramKnowledgeOnboarding() {
     return this.effective.telegramKnowledgeOnboarding;
+  }
+
+  async getTelegramKnowledgeOnboardingForExternalUser(externalUserId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { channel: "telegram", externalId: externalUserId },
+    });
+    const selected = user?.selectedBotConfigurationId?.trim();
+    const bot = selected ? this.botConfiguration.resolveById(selected) : this.botConfiguration.get();
+    return this.effectiveFor(bot).telegramKnowledgeOnboarding;
   }
 
   isGlobalKnowledgeIntent(text: string): boolean {
@@ -186,6 +199,25 @@ export class DialogService {
         text: input.text,
       },
     });
+
+    const snippetHit = this.snippetMatcher.match(input.text, snap.bot);
+    if (snippetHit) {
+      if (isDevelopment()) {
+        this.logger.debug(`snippet hit bot=${snap.bot.id} id=${snippetHit.id} (no LLM call)`);
+      }
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { stage: conversation.stage, status: "ACTIVE" },
+      });
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: snippetHit.reply,
+        },
+      });
+      return { replyText: snippetHit.reply, stage: conversation.stage };
+    }
 
     const nextStage = conversation.stage;
     const templateReply = this.buildReply(nextStage, input.text, snap);

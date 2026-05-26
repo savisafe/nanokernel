@@ -1,5 +1,25 @@
 {
   "llmPromptProfile": "open-topics",
+  "snippets": [
+    {
+      "id": "help",
+      "mode": "exact",
+      "match": ["/help", "/start"],
+      "reply": "Я AI-ассистент. Готов общаться на любые темы. Просто напишите вопрос."
+    },
+    {
+      "id": "capabilities",
+      "mode": "keywords",
+      "match": ["что умеешь", "что ты умеешь", "чем поможешь", "твои возможности"],
+      "reply": "Я могу обсуждать любые темы, отвечать на вопросы и помогать формулировать мысли. Спросите что угодно — отвечу по существу."
+    },
+    {
+      "id": "ping",
+      "mode": "regex",
+      "match": ["^\\s*(ping|пинг)\\s*\\??$"],
+      "reply": "pong"
+    }
+  ],
   "promptProfile": {
     "companyName": "ассистент",
     "openTopicsMode": true,
