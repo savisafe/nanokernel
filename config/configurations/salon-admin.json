@@ -2,6 +2,12 @@
   "schemaVersion": 2,
   "id": "salon-admin",
   "name": "Студия маникюра «Лотос»",
+  "channel": {
+    "telegram": {
+      "tokenEnv": "SALON_ADMIN_TG_TOKEN",
+      "webhookSecret": "salon-admin-7f4c2d-replace-me"
+    }
+  },
   "persona": {
     "role": "администратор студии маникюра «Лотос»",
     "language": "ru",

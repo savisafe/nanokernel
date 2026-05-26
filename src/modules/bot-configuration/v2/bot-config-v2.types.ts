@@ -75,6 +75,19 @@ const llmSchema = z.object({
   contextMessages: z.number().int().min(2).max(50).optional(),
 });
 
+const channelTelegramSchema = z.object({
+  /** Имя env-переменной с Telegram bot token. JSON не должен содержать сам токен. */
+  tokenEnv: z.string().min(1),
+  /** Уникальный секрет в URL вебхука: POST /webhooks/telegram/:secret. */
+  webhookSecret: z.string().min(8),
+  /** Опциональный X-Telegram-Bot-Api-Secret-Token заголовок (verify on incoming). */
+  apiSecretToken: z.string().min(1).optional(),
+});
+
+const channelSchema = z.object({
+  telegram: channelTelegramSchema.optional(),
+});
+
 const slotSpecSchema = z.object({
   /** Что спросить у клиента, когда подходим к этому слоту. */
   ask: z.string().min(1),
@@ -121,6 +134,8 @@ export const botConfigV2Schema = z.object({
   skills: z.array(z.string().min(1)).optional(),
   /** FSM-скрипты: ключ — имя сценария ("booking"), значение — спецификация. */
   scripts: z.record(z.string().min(1), scriptSpecSchema).optional(),
+  /** Привязка к каналам: tokenEnv + webhookSecret per channel. */
+  channel: channelSchema.optional(),
 });
 
 export type BotConfigV2 = z.infer<typeof botConfigV2Schema>;

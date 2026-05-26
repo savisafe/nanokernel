@@ -2,6 +2,12 @@
   "schemaVersion": 2,
   "id": "pipe-sales",
   "name": "Завод труб «Профильмет»",
+  "channel": {
+    "telegram": {
+      "tokenEnv": "PIPE_SALES_TG_TOKEN",
+      "webhookSecret": "pipe-sales-9a3b1e-replace-me"
+    }
+  },
   "persona": {
     "role": "менеджер по продажам металлопроката, специализация — трубы (профильные, круглые, нержавейка, медь)",
     "language": "ru",

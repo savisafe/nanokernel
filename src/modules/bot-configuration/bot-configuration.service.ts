@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
 import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
@@ -16,11 +16,13 @@ export class BotConfigurationService implements OnModuleInit {
   private readonly logger = new Logger(BotConfigurationService.name);
   private readonly resolved: ResolvedBotConfiguration;
   private readonly resolveCache = new Map<string, ResolvedBotConfiguration>();
+  private readonly bySecret = new Map<string, ResolvedBotConfiguration>();
 
   constructor() {
     const id = this.normalizeConfigurationId(process.env.BOT_CONFIGURATION?.trim() || "default");
     this.resolved = this.load(id);
     this.resolveCache.set(id, this.resolved);
+    this.discoverAll();
   }
 
   private normalizeConfigurationId(raw: string): string {
@@ -34,6 +36,11 @@ export class BotConfigurationService implements OnModuleInit {
   onModuleInit(): void {
     this.logger.log(
       `Bot configuration "${this.resolved.id}" → promptProfile="${this.resolved.llmPromptProfile}", useRag=${this.resolved.useRag}`,
+    );
+    const ids = [...this.resolveCache.keys()];
+    const withSecrets = [...this.bySecret.values()].map((b) => b.id);
+    this.logger.log(
+      `Discovered configurations: ${ids.length} (${ids.join(", ")}). With Telegram webhook secret: ${withSecrets.length} (${withSecrets.join(", ") || "none"}).`,
     );
   }
 
@@ -49,7 +56,60 @@ export class BotConfigurationService implements OnModuleInit {
     }
     const loaded = this.load(id);
     this.resolveCache.set(id, loaded);
+    this.indexSecret(loaded);
     return loaded;
+  }
+
+  /** Резолв бота по секрету из URL вебхука. Возвращает undefined если секрет неизвестен. */
+  resolveByWebhookSecret(secret: string): ResolvedBotConfiguration | undefined {
+    return this.bySecret.get(secret);
+  }
+
+  /** Все известные сборки (для админ-эндпоинтов, метрик и т.п.). */
+  listAll(): ResolvedBotConfiguration[] {
+    return [...this.resolveCache.values()];
+  }
+
+  private discoverAll(): void {
+    const dir = path.resolve(process.cwd(), "config", "configurations");
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    } catch (e) {
+      this.logger.warn(
+        `Cannot scan ${dir}: ${e instanceof Error ? e.message : String(e)}. Multi-bot routing disabled.`,
+      );
+      return;
+    }
+    for (const f of files) {
+      const id = f.slice(0, -5);
+      if (this.resolveCache.has(id)) {
+        this.indexSecret(this.resolveCache.get(id)!);
+        continue;
+      }
+      try {
+        const bot = this.load(id);
+        this.resolveCache.set(id, bot);
+        this.indexSecret(bot);
+      } catch (e) {
+        this.logger.warn(
+          `Configuration "${id}" failed to load during discovery: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
+  private indexSecret(bot: ResolvedBotConfiguration): void {
+    const secret = bot.channel?.telegram?.webhookSecret;
+    if (!secret) return;
+    const existing = this.bySecret.get(secret);
+    if (existing && existing.id !== bot.id) {
+      this.logger.warn(
+        `Webhook secret collision: "${existing.id}" and "${bot.id}" share the same secret — keeping "${existing.id}".`,
+      );
+      return;
+    }
+    this.bySecret.set(secret, bot);
   }
 
   private load(configurationId: string): ResolvedBotConfiguration {

@@ -25,6 +25,16 @@ export interface ResolvedBotGuardrails {
   maxReplyChars?: number;
 }
 
+export interface ResolvedBotChannelTelegram {
+  tokenEnv: string;
+  webhookSecret: string;
+  apiSecretToken?: string;
+}
+
+export interface ResolvedBotChannel {
+  telegram?: ResolvedBotChannelTelegram;
+}
+
 export interface ResolvedBotConfiguration {
   id: string;
   llmPromptProfile: string;
@@ -39,4 +49,6 @@ export interface ResolvedBotConfiguration {
   scripts?: Record<string, ScriptSpec>;
   /** Программные ограничения (не путать с текстовыми гайдами в system prompt). */
   guardrails?: ResolvedBotGuardrails;
+  /** Privacy-чувствительные настройки канала: token-env, webhook-secret. */
+  channel?: ResolvedBotChannel;
 }

@@ -60,6 +60,10 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
         }
       : undefined;
 
+  const channel = v2.channel?.telegram
+    ? { telegram: { ...v2.channel.telegram } }
+    : undefined;
+
   return {
     id,
     llmPromptProfile: id,
@@ -73,5 +77,6 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     ...(v2.skills && v2.skills.length > 0 ? { skills: v2.skills } : {}),
     ...(v2.scripts && Object.keys(v2.scripts).length > 0 ? { scripts: v2.scripts } : {}),
     ...(guardrails ? { guardrails } : {}),
+    ...(channel ? { channel } : {}),
   };
 }

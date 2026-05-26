@@ -2,7 +2,7 @@ import { IncomingTelegramMessage } from "../telegram/telegram.types";
 import { IncomingWhatsAppMessage } from "../whatsapp/whatsapp.types";
 
 export type DialogInboundJob =
-  | ({ channel: "telegram" } & IncomingTelegramMessage)
+  | ({ channel: "telegram"; botId: string } & IncomingTelegramMessage)
   | ({ channel: "whatsapp" } & IncomingWhatsAppMessage);
 
 export function buildDialogInboundJobId(job: DialogInboundJob): string | undefined {

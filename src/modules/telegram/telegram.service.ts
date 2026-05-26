@@ -9,6 +9,8 @@ import { DialogOutput } from "../dialog/dialog.types";
 import { IdempotencyService } from "../idempotency/idempotency.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isDevelopment } from "../shared/is-development";
+import type { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
+import { telegramBotAls, resolveTelegramToken } from "./telegram-bot-context";
 import {
   type TelegramApiMessage,
   type TelegramUnsupportedAttachment,
@@ -183,7 +185,17 @@ export class TelegramService implements OnModuleDestroy {
     );
   }
 
-  async handleIncoming(payload: TelegramWebhookPayload): Promise<void> {
+  async handleIncoming(
+    payload: TelegramWebhookPayload,
+    bot: ResolvedBotConfiguration,
+  ): Promise<void> {
+    return telegramBotAls.run({ bot }, () => this.handleIncomingInContext(payload, bot));
+  }
+
+  private async handleIncomingInContext(
+    payload: TelegramWebhookPayload,
+    bot: ResolvedBotConfiguration,
+  ): Promise<void> {
     if (payload.callback_query) {
       await this.handleBotConfigurationCallback(payload.callback_query);
       return;
@@ -215,7 +227,7 @@ export class TelegramService implements OnModuleDestroy {
     const flowStarted = dev ? performance.now() : 0;
     if (dev) {
       this.logger.log(
-        `[Telegram] 1/3 received chatId=${message.chatId} messageId=${message.messageId ?? "n/a"}: ${preview}`,
+        `[Telegram] 1/3 received bot=${bot.id} chatId=${message.chatId} messageId=${message.messageId ?? "n/a"}: ${preview}`,
       );
     }
 
@@ -223,6 +235,7 @@ export class TelegramService implements OnModuleDestroy {
       try {
         await this.dialogQueueService.enqueue({
           channel: "telegram",
+          botId: bot.id,
           ...message,
         });
       } catch (e) {
@@ -231,22 +244,25 @@ export class TelegramService implements OnModuleDestroy {
       }
       if (dev) {
         this.logger.log(
-          `[Telegram] enqueued chatId=${message.chatId} messageId=${message.messageId ?? "n/a"} (${Math.round(performance.now() - flowStarted)}ms to ack path)`,
+          `[Telegram] enqueued bot=${bot.id} chatId=${message.chatId} messageId=${message.messageId ?? "n/a"} (${Math.round(performance.now() - flowStarted)}ms to ack path)`,
         );
       }
       return;
     }
 
-    await this.processInboundQueued(message, flowStarted);
+    await this.processInboundQueued(message, bot, flowStarted);
   }
 
   /** Тяжёлая обработка: LLM + отправка ответа (вебхук или воркер очереди). */
   async processInboundQueued(
     message: IncomingTelegramMessage,
+    bot: ResolvedBotConfiguration,
     flowStarted?: number,
   ): Promise<void> {
-    await this.runInboundSerialized(message.chatId, () =>
-      this.processInboundQueuedInner(message, flowStarted),
+    await telegramBotAls.run({ bot }, () =>
+      this.runInboundSerialized(message.chatId, () =>
+        this.processInboundQueuedInner(message, flowStarted),
+      ),
     );
   }
 
@@ -535,7 +551,7 @@ export class TelegramService implements OnModuleDestroy {
   }
 
   private async answerCallbackQuery(callbackQueryId: string): Promise<void> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = resolveTelegramToken();
     if (!token) {
       return;
     }
@@ -560,9 +576,9 @@ export class TelegramService implements OnModuleDestroy {
     text: string,
     options?: { replyMarkup?: Record<string, unknown> },
   ): Promise<boolean> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = resolveTelegramToken();
     if (!token) {
-      this.logger.warn("TELEGRAM_BOT_TOKEN is not set");
+      this.logger.warn("Telegram token not resolved (channel.telegram.tokenEnv or TELEGRAM_BOT_TOKEN)");
       return false;
     }
 
@@ -605,9 +621,9 @@ export class TelegramService implements OnModuleDestroy {
   }
 
   private async downloadTelegramFile(fileId: string): Promise<Buffer> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = resolveTelegramToken();
     if (!token) {
-      throw new Error("TELEGRAM_BOT_TOKEN is not set");
+      throw new Error("Telegram token not resolved (channel.telegram.tokenEnv or TELEGRAM_BOT_TOKEN)");
     }
     const getFileUrl = `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;
     const gf = await fetch(getFileUrl);
@@ -644,7 +660,7 @@ export class TelegramService implements OnModuleDestroy {
   }
 
   private async sendChatAction(chatId: number, action: string): Promise<void> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = resolveTelegramToken();
     if (!token) {
       return;
     }
