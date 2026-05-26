@@ -8,7 +8,6 @@ import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration
 import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
-import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
 import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
 import { BotUsageService } from "../bot-usage/bot-usage.service";
 import { SkillsRegistry } from "../skills/skills-registry.service";
@@ -324,35 +323,6 @@ export class DialogService {
     return selected.replyLines.map((line) => line.replace("{clientText}", clientText)).join("\n");
   }
 
-  /**
-   * Приветствия и мета-вопросы не требуют фрагментов БЗ — паттерны задаются в профиле
-   * (`strictKnowledgeConversationalBypass`), иначе strictKnowledgeMode даёт сухой noKnowledgeReply.
-   */
-  private isConversationalBypassStrictKnowledge(userText: string, profile: ResolvedLlmPromptProfile): boolean {
-    const cfg = profile.strictKnowledgeConversationalBypass;
-    if (!cfg || cfg.patterns.length === 0) {
-      return false;
-    }
-    const t = userText.trim().toLowerCase();
-    const maxLen = cfg.maxMessageLength;
-    if (t.length === 0 || t.length > maxLen) {
-      return false;
-    }
-    return cfg.patterns.some((re) => re.test(t));
-  }
-
-  private strictKnowledgeConversationalSystemAddendum(profile: ResolvedLlmPromptProfile): string {
-    const lines = profile.strictKnowledgeConversationalPromptAddendumLines;
-    const resolved =
-      lines === undefined
-        ? DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES
-        : lines;
-    if (resolved.length === 0) {
-      return "";
-    }
-    return resolved.join("\n");
-  }
-
   private async tryLlmReply(
     conversationId: string,
     stage: string,
@@ -397,7 +367,6 @@ export class DialogService {
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
-    const dialogCfg = this.effectiveFor(snap.bot);
     if (!this.llmService.isEnabled()) {
       await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
@@ -414,36 +383,10 @@ export class DialogService {
     });
     rows.reverse();
 
-    const profile = snap.profile;
-    const conversationalBypass =
-      Boolean(profile.strictKnowledgeMode && profile.scopeText) &&
-      this.isConversationalBypassStrictKnowledge(userText, profile);
-    const retrieval = conversationalBypass
-      ? { context: undefined as string | undefined, mode: "none" as const, chunks: [] as DialogDiagnosticChunk[] }
-      : await this.retrieveKnowledgeContextDetailed(userText, snap);
-
+    const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
     const knowledgeContext = retrieval.context;
 
-    if (profile.strictKnowledgeMode && profile.scopeText && !knowledgeContext && !conversationalBypass) {
-      const replyText = profile.noKnowledgeReply ?? dialogCfg.fallbackNoKnowledgeReply;
-      const system =
-        this.buildSystemPrompt(stage, channel, undefined, snap) +
-        (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
-      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
-      return {
-        replyText,
-        diagnostics: {
-          systemPrompt: system,
-          knowledgeContext,
-          chunks: retrieval.chunks,
-          retrievalMode: retrieval.mode,
-        },
-      };
-    }
-
-    const system =
-      this.buildSystemPrompt(stage, channel, knowledgeContext, snap) +
-      (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
+    const system = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
     const messages: LlmChatMessage[] = [
       { role: "system", content: system },
       ...rows.map((m) => ({

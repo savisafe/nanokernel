@@ -52,13 +52,6 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }
 
-model HandoffEvent {
-  id             String   @id @default(cuid())
-  conversationId String
-  reason         String
-  createdAt      DateTime @default(now())
-}
-
 model ProcessedInboundMessage {
   id                String   @id @default(cuid())
   channel           String
@@ -66,58 +59,6 @@ model ProcessedInboundMessage {
   createdAt         DateTime @default(now())
 
   @@unique([channel, externalMessageId])
-}
-
-enum AdminRole {
-  ADMIN
-  MANAGER
-}
-
-/// Заготовка под multi-tenant: сейчас можно оставить пустым и не задавать tenantId у сущностей
-model Tenant {
-  id                String              @id @default(cuid())
-  slug              String              @unique
-  name              String?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  botConfigurations BotConfiguration[]
-  promptProfiles    PromptProfile[]
-}
-
-/// Сборка бота (аналог config/configurations/<slug>.json), хранение в БД для админки
-model BotConfiguration {
-  id        String   @id @default(cuid())
-  tenantId  String?
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  slug      String   @unique
-  name      String?
-  data      Json
-  version   Int      @default(1)
-  isActive  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model PromptProfile {
-  id        String   @id @default(cuid())
-  tenantId  String?
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  slug      String   @unique
-  data      Json
-  version   Int      @default(1)
-  isActive  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model AdminUser {
-  id               String    @id @default(cuid())
-  email            String    @unique
-  passwordHash     String
-  role             AdminRole @default(MANAGER)
-  refreshTokenHash String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
 }
 
 /// Запись клиента (результат FSM-скрипта booking). Без FK на Conversation,
@@ -140,7 +81,7 @@ model Booking {
 }
 
 /// События для observability и биллинга: каждый ход = одна запись.
-/// kind: 'snippet' (ответ без LLM), 'llm' (вызов модели), 'no_llm_fallback' (LLM выключен/упал), 'fsm' (FSM-шаг).
+/// kind: 'snippet' (ответ без LLM), 'llm' (вызов модели), 'no_llm_fallback' (LLM выключен/упал), 'fsm' (FSM-шаг), 'safety_block'.
 model BotUsage {
   id               String   @id @default(cuid())
   botId            String
