@@ -2,6 +2,7 @@ import type { PromptProfileFileJson } from "../prompt-profile/prompt-profile.typ
 import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
 import type { SnippetSpec } from "../snippets/snippet.types";
 import type { ScriptSpec } from "./v2/bot-config-v2.types";
+import type { SafetyCategory } from "../safety/safety.types";
 
 export interface BotConfigurationFileJson {
   llmPromptProfile?: string | null;
@@ -16,6 +17,14 @@ export interface ResolvedBotLlmSettings {
   maxTokens?: number;
 }
 
+export interface ResolvedBotGuardrails {
+  safetyChecks?: SafetyCategory[];
+  refuseReply?: string;
+  rateLimitReply?: string;
+  rateLimit?: { requests: number; windowSeconds: number };
+  maxReplyChars?: number;
+}
+
 export interface ResolvedBotConfiguration {
   id: string;
   llmPromptProfile: string;
@@ -28,4 +37,6 @@ export interface ResolvedBotConfiguration {
   skills?: string[];
   /** FSM-скрипты бота (имя → спецификация). */
   scripts?: Record<string, ScriptSpec>;
+  /** Программные ограничения (не путать с текстовыми гайдами в system prompt). */
+  guardrails?: ResolvedBotGuardrails;
 }

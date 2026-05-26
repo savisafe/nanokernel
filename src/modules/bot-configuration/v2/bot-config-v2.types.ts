@@ -35,6 +35,23 @@ const guardrailsSchema = z.object({
   neverInvent: z.array(z.string().min(1)).optional(),
   /** Если true — бот не уходит от своей роли и темы, даже если просят. */
   stickToScope: z.boolean().optional(),
+  /** Программные проверки безопасности (фильтр в коде, не только промпт). */
+  safetyChecks: z
+    .array(z.enum(["medical", "legal", "financial", "self_harm", "injection"]))
+    .optional(),
+  /** Текст отказа при срабатывании safety-чека (любой категории кроме rate_limit). */
+  refuseReply: z.string().min(1).optional(),
+  /** Текст отказа при срабатывании rate-limit. */
+  rateLimitReply: z.string().min(1).optional(),
+  /** Лимит входящих сообщений per user (msg/min). */
+  rateLimit: z
+    .object({
+      requests: z.number().int().positive(),
+      windowSeconds: z.number().int().positive(),
+    })
+    .optional(),
+  /** Cap на длину LLM-ответа (символов). */
+  maxReplyChars: z.number().int().positive().optional(),
 });
 
 const knowledgeSchema = z.object({

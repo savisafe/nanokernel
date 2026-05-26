@@ -13,6 +13,8 @@ import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
 import { BotUsageService } from "../bot-usage/bot-usage.service";
 import { SkillsRegistry } from "../skills/skills-registry.service";
 import { ScriptRunnerService } from "../scripts/script-runner.service";
+import { SafetyInService } from "../safety/safety-in.service";
+import { SafetyOutService } from "../safety/safety-out.service";
 import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
@@ -55,6 +57,8 @@ export class DialogService {
     private readonly botUsage: BotUsageService,
     private readonly skills: SkillsRegistry,
     private readonly scriptRunner: ScriptRunnerService,
+    private readonly safetyIn: SafetyInService,
+    private readonly safetyOut: SafetyOutService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
@@ -198,6 +202,13 @@ export class DialogService {
       return { replyText, stage: conversation.stage };
     }
 
+    // Rate-limit раньше всего: защита от спама ДО записи сообщения в БД.
+    const rl = await this.safetyIn.checkRateLimit(input.channel, input.externalUserId, snap.bot);
+    if (rl.blocked && rl.reply) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "rate_limit");
+      return { replyText: rl.reply, stage: conversation.stage };
+    }
+
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -205,6 +216,25 @@ export class DialogService {
         text: input.text,
       },
     });
+
+    // Content safety: injection + safety-topics. Запускается ДО FSM/snippet/LLM,
+    // чтобы перехватить попытки jailbreak / запрос мед/юр-консультации в любом состоянии.
+    const contentSafety = this.safetyIn.checkContent(input.text, snap.bot);
+    if (contentSafety.blocked && contentSafety.reply) {
+      await this.botUsage.recordSafetyBlock(
+        snap.bot.id,
+        conversation.id,
+        contentSafety.category ?? "injection",
+      );
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: contentSafety.reply,
+        },
+      });
+      return { replyText: contentSafety.reply, stage: conversation.stage };
+    }
 
     const fsmOutcome = await this.scriptRunner.step({
       conversation,
@@ -250,7 +280,7 @@ export class DialogService {
 
     const nextStage = conversation.stage;
     const templateReply = this.buildReply(nextStage, input.text, snap);
-    const replyText = await this.tryLlmReply(
+    const rawReply = await this.tryLlmReply(
       conversation.id,
       nextStage,
       input.channel,
@@ -258,6 +288,8 @@ export class DialogService {
       input.text,
       snap,
     );
+    const safeOut = this.safetyOut.apply(rawReply, snap.bot);
+    const replyText = safeOut.text;
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {

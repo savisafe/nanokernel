@@ -27,7 +27,14 @@
       "ГОСТы и марки стали, в которых не уверен",
       "контактные телефоны и email"
     ],
-    "stickToScope": true
+    "stickToScope": true,
+    "safetyChecks": ["legal", "financial", "injection"],
+    "refuseReply": "Это не моя компетенция — я подбираю трубы по техническим параметрам. Юридические/финансовые вопросы — к соответствующему специалисту.",
+    "rateLimit": {
+      "requests": 40,
+      "windowSeconds": 60
+    },
+    "maxReplyChars": 3000
   },
   "knowledge": {
     "snippets": [

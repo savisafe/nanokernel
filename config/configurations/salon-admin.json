@@ -26,7 +26,14 @@
       "имена мастеров",
       "наличие свободного времени в конкретный день"
     ],
-    "stickToScope": true
+    "stickToScope": true,
+    "safetyChecks": ["medical", "injection"],
+    "refuseReply": "Это не моя зона — я администратор студии и помогаю с записью на услуги. Если вопрос про процедуру в нашем каталоге — рассказывайте, подберу подходящую.",
+    "rateLimit": {
+      "requests": 30,
+      "windowSeconds": 60
+    },
+    "maxReplyChars": 2000
   },
   "knowledge": {
     "snippets": [

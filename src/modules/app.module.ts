@@ -13,6 +13,7 @@ import { SnippetsModule } from "./snippets/snippets.module";
 import { BotUsageModule } from "./bot-usage/bot-usage.module";
 import { SkillsModule } from "./skills/skills.module";
 import { ScriptsModule } from "./scripts/scripts.module";
+import { SafetyModule } from "./safety/safety.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ScriptsModule } from "./scripts/scripts.module";
     BotUsageModule,
     SkillsModule,
     ScriptsModule,
+    SafetyModule,
     DialogModule,
     DialogQueueModule,
     HealthModule,

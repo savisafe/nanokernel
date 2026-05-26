@@ -38,6 +38,28 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
         }
       : undefined;
 
+  const guardrails =
+    v2.guardrails &&
+    (v2.guardrails.safetyChecks?.length ||
+      v2.guardrails.refuseReply ||
+      v2.guardrails.rateLimitReply ||
+      v2.guardrails.rateLimit ||
+      v2.guardrails.maxReplyChars)
+      ? {
+          ...(v2.guardrails.safetyChecks?.length
+            ? { safetyChecks: v2.guardrails.safetyChecks }
+            : {}),
+          ...(v2.guardrails.refuseReply ? { refuseReply: v2.guardrails.refuseReply } : {}),
+          ...(v2.guardrails.rateLimitReply
+            ? { rateLimitReply: v2.guardrails.rateLimitReply }
+            : {}),
+          ...(v2.guardrails.rateLimit ? { rateLimit: v2.guardrails.rateLimit } : {}),
+          ...(v2.guardrails.maxReplyChars !== undefined
+            ? { maxReplyChars: v2.guardrails.maxReplyChars }
+            : {}),
+        }
+      : undefined;
+
   return {
     id,
     llmPromptProfile: id,
@@ -50,5 +72,6 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     ...(llm ? { llm } : {}),
     ...(v2.skills && v2.skills.length > 0 ? { skills: v2.skills } : {}),
     ...(v2.scripts && Object.keys(v2.scripts).length > 0 ? { scripts: v2.scripts } : {}),
+    ...(guardrails ? { guardrails } : {}),
   };
 }
