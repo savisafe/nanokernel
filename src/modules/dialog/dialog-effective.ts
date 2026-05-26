@@ -55,13 +55,6 @@ export function resolveEffectiveDialog(bot: ResolvedBotConfiguration): Effective
       base.tokenization.stopWords = [...raw.tokenization.stopWords];
     }
   }
-  if (raw.telegramKnowledgeOnboarding) {
-    base.telegramKnowledgeOnboarding = {
-      ...base.telegramKnowledgeOnboarding,
-      ...raw.telegramKnowledgeOnboarding,
-    };
-  }
-
   return {
     ...base,
     systemPromptTemplate: raw.systemPrompt.template.trim(),

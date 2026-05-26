@@ -41,34 +41,6 @@ export interface DialogTokenization {
   stopWords: string[];
 }
 
-export interface DialogTelegramKnowledgeOnboarding {
-  welcomeStart: string;
-  newDocHint: string;
-  draftSavedAck: string;
-  draftAckDebounceMs: number;
-  emptyDone: string;
-  saved: string;
-  awaitingSlash: string;
-  strictNoScopeAwaitingDraft: string;
-  strictNoScopeNeedNew: string;
-  documentOutsideKnowledgeMode: string;
-  documentUnsupportedFormat: string;
-  documentTooLarge: string;
-  documentDownloadFailed: string;
-  documentExtractFailed: string;
-  documentExtractEmpty: string;
-  documentAcceptedAck: string;
-  attachmentNotDocumentHint: string;
-  questionBeforeDoneHint: string;
-  documentExtractShortWarning: string;
-  linkNotSupportedInDraft: string;
-  modeChoiceCaption: string;
-  modeButtonKnowledgeConsultant: string;
-  modeButtonOpenTopics: string;
-  modeAppliedKnowledgeConsultant: string;
-  modeAppliedOpenTopics: string;
-}
-
 /**
  * Минимальная конфигурация диалога: template для system prompt + опции retrieval/чанкинга/UX.
  * Адаптер BotConfig v2 строит template из persona/goals/guardrails автоматически.
@@ -82,7 +54,6 @@ export interface DialogConfigFileJson {
   chunkBoundaries?: Partial<DialogChunkBoundaries>;
   retrievalPresentation?: Partial<DialogRetrievalPresentation>;
   tokenization?: Partial<DialogTokenization>;
-  telegramKnowledgeOnboarding?: Partial<DialogTelegramKnowledgeOnboarding>;
 }
 
 /** Общие поля для lexical/RAG и лимитов (после resolve). */
@@ -95,7 +66,6 @@ export interface DialogSubsystemResolved {
   chunkBoundaries: DialogChunkBoundaries;
   retrievalPresentation: DialogRetrievalPresentation;
   tokenization: DialogTokenization;
-  telegramKnowledgeOnboarding: DialogTelegramKnowledgeOnboarding;
 }
 
 export interface EffectiveDialogRuntime extends DialogSubsystemResolved {

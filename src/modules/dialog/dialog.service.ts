@@ -63,60 +63,26 @@ export class DialogService {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
 
-  getTelegramKnowledgeOnboarding() {
-    return this.effective.telegramKnowledgeOnboarding;
-  }
-
-  async getTelegramKnowledgeOnboardingForExternalUser(externalUserId: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { channel: "telegram", externalId: externalUserId },
-    });
-    const selected = user?.selectedBotConfigurationId?.trim();
-    const bot = selected ? this.botConfiguration.resolveById(selected) : this.botConfiguration.get();
-    return this.effectiveFor(bot).telegramKnowledgeOnboarding;
-  }
-
-  isGlobalKnowledgeIntent(text: string): boolean {
-    return this.isGlobalKnowledgeRequest(text);
-  }
-
   composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
     const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
     return {
       profile,
       bot,
-      // В v2 template-режиме prefix/suffix не используются (весь промпт в systemPromptTemplate).
-      // Поля оставлены в snapshot для backward compatibility с типом DialogRuntimeSnapshot.
+      // template-режим v2: prefix/suffix не используются (весь промпт в systemPromptTemplate),
+      // поля оставлены в snapshot для backward compatibility типа.
       llmSystemPromptPrefix: "",
       llmSystemPromptSuffix: "",
       knowledgeChunks,
     };
   }
 
-  private resolveRuntimeSnapshotForUser(channel: ChannelType, user: User): DialogRuntimeSnapshot {
-    const globalBot = this.botConfiguration.get();
-    const bot =
-      user.selectedBotConfigurationId?.trim().length
-        ? this.botConfiguration.resolveById(user.selectedBotConfigurationId.trim())
-        : globalBot;
+  private resolveRuntimeSnapshotForUser(_channel: ChannelType, _user: User): DialogRuntimeSnapshot {
+    // В multi-bot модели (Phase 7+) бот определяется URL-секретом вебхука, не per-user.
+    // selectedBotConfigurationId удалён в Phase 9b — пользовательский выбор больше не
+    // переопределяет глобальную сборку процесса/контекста.
+    const bot = this.botConfiguration.get();
     const profile = this.promptProfile.resolveProfileForBot(bot);
-    const base = this.composeSnapshot(profile, bot);
-    const scope = user.knowledgeScopeText?.trim();
-    if (channel === "telegram" && scope && scope.length > 0) {
-      const profileScoped: ResolvedLlmPromptProfile = {
-        ...base.profile,
-        scopeText: scope,
-      };
-      return {
-        profile: profileScoped,
-        bot: base.bot,
-        llmSystemPromptPrefix: "",
-        llmSystemPromptSuffix: "",
-        knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profileScoped, base.bot),
-        disableRag: true,
-      };
-    }
-    return base;
+    return this.composeSnapshot(profile, bot);
   }
 
   /**
@@ -174,36 +140,6 @@ export class DialogService {
       input.externalUserId,
     );
     const snap = this.resolveRuntimeSnapshotForUser(input.channel, user);
-
-    if (
-      input.channel === "telegram" &&
-      snap.profile.strictKnowledgeMode &&
-      !user.knowledgeScopeText?.trim()
-    ) {
-      const onboarding = this.effectiveFor(snap.bot).telegramKnowledgeOnboarding;
-      const replyText = user.telegramKnowledgeAwaiting
-        ? onboarding.strictNoScopeAwaitingDraft
-        : onboarding.strictNoScopeNeedNew;
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          role: "client",
-          text: input.text,
-        },
-      });
-      await this.prisma.conversation.update({
-        where: { id: conversation.id },
-        data: { stage: conversation.stage, status: "ACTIVE" },
-      });
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          role: "assistant",
-          text: replyText,
-        },
-      });
-      return { replyText, stage: conversation.stage };
-    }
 
     // Rate-limit раньше всего: защита от спама ДО записи сообщения в БД.
     const rl = await this.safetyIn.checkRateLimit(input.channel, input.externalUserId, snap.bot);
