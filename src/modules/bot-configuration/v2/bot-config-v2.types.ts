@@ -68,6 +68,8 @@ export const botConfigV2Schema = z.object({
   knowledge: knowledgeSchema.optional(),
   style: styleSchema.optional(),
   llm: llmSchema.optional(),
+  /** Имена skills, которые включены для этого бота (зарегистрированы в SkillsRegistry). */
+  skills: z.array(z.string().min(1)).optional(),
 });
 
 export type BotConfigV2 = z.infer<typeof botConfigV2Schema>;

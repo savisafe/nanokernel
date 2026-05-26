@@ -11,6 +11,7 @@ import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { RagModule } from "./rag/rag.module";
 import { SnippetsModule } from "./snippets/snippets.module";
 import { BotUsageModule } from "./bot-usage/bot-usage.module";
+import { SkillsModule } from "./skills/skills.module";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { BotUsageModule } from "./bot-usage/bot-usage.module";
     LlmModule,
     SnippetsModule,
     BotUsageModule,
+    SkillsModule,
     DialogModule,
     DialogQueueModule,
     HealthModule,

@@ -23,4 +23,6 @@ export interface ResolvedBotConfiguration {
   dialog?: DialogConfigFileJson;
   snippets?: SnippetSpec[];
   llm?: ResolvedBotLlmSettings;
+  /** Имена включённых skills (резолв через SkillsRegistry в DialogService). */
+  skills?: string[];
 }

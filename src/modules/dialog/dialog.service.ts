@@ -11,6 +11,7 @@ import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types
 import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
 import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
 import { BotUsageService } from "../bot-usage/bot-usage.service";
+import { SkillsRegistry } from "../skills/skills-registry.service";
 import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
@@ -51,6 +52,7 @@ export class DialogService {
     private readonly ragService: RagService,
     private readonly snippetMatcher: SnippetMatcherService,
     private readonly botUsage: BotUsageService,
+    private readonly skills: SkillsRegistry,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
@@ -444,13 +446,37 @@ export class DialogService {
       })),
     ];
 
-    const out = await this.llmService.complete(messages, snap.bot.llm);
+    const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
+    const out = enabledSkills.length > 0
+      ? await this.llmService.completeWithTools(
+          messages,
+          snap.bot.llm,
+          enabledSkills.map((s) => this.skills.toToolSpec(s)),
+          async (name, args) => {
+            const skill = this.skills.get(name);
+            if (!skill) {
+              return { error: `unknown skill "${name}"` };
+            }
+            const result = await skill.execute(args, {
+              botId: snap.bot.id,
+              conversationId,
+              channel,
+            });
+            if (isDevelopment()) {
+              this.logger.debug(`skill exec bot=${snap.bot.id} name=${name} args=${JSON.stringify(args)}`);
+            }
+            return result.data;
+          },
+        )
+      : await this.llmService.complete(messages, snap.bot.llm);
     if (out) {
       await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
       if (isDevelopment()) {
         const p = out.usage?.promptTokens ?? "?";
         const c = out.usage?.completionTokens ?? "?";
-        this.logger.debug(`llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"}`);
+        this.logger.debug(
+          `llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"} skills=${enabledSkills.length}`,
+        );
       }
     } else {
       await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);

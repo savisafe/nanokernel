@@ -48,5 +48,6 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
       ? { snippets: v2.knowledge.snippets }
       : {}),
     ...(llm ? { llm } : {}),
+    ...(v2.skills && v2.skills.length > 0 ? { skills: v2.skills } : {}),
   };
 }

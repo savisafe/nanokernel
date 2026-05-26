@@ -1,0 +1,74 @@
+[
+  {
+    "id": "manicure-classic",
+    "name": "Классический маникюр",
+    "category": "маникюр",
+    "duration": 60,
+    "price": 1500
+  },
+  {
+    "id": "manicure-hardware",
+    "name": "Аппаратный маникюр",
+    "category": "маникюр",
+    "duration": 75,
+    "price": 1800
+  },
+  {
+    "id": "manicure-gel",
+    "name": "Маникюр с покрытием гель-лак",
+    "category": "маникюр",
+    "duration": 90,
+    "price": 2400
+  },
+  {
+    "id": "manicure-combined",
+    "name": "Комбинированный маникюр",
+    "category": "маникюр",
+    "duration": 90,
+    "price": 2100
+  },
+  {
+    "id": "pedicure-classic",
+    "name": "Классический педикюр",
+    "category": "педикюр",
+    "duration": 75,
+    "price": 2000
+  },
+  {
+    "id": "pedicure-hardware",
+    "name": "Аппаратный педикюр",
+    "category": "педикюр",
+    "duration": 90,
+    "price": 2500
+  },
+  {
+    "id": "pedicure-gel",
+    "name": "Педикюр с покрытием гель-лак",
+    "category": "педикюр",
+    "duration": 105,
+    "price": 2900
+  },
+  {
+    "id": "design-french",
+    "name": "Французский дизайн",
+    "category": "дизайн",
+    "duration": 30,
+    "price": 600,
+    "notes": "доплата сверху основной услуги"
+  },
+  {
+    "id": "design-art",
+    "name": "Художественный дизайн (роспись)",
+    "category": "дизайн",
+    "duration": 60,
+    "price": 1200,
+    "notes": "цена за 4 ногтя; для всех — двойная"
+  },
+  {
+    "id": "removal-coating",
+    "name": "Снятие покрытия",
+    "category": "коррекция",
+    "duration": 30,
+    "price": 400
+  }
+]
