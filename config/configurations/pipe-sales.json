@@ -73,6 +73,8 @@
     ]
   },
   "llm": {
+    "temperature": 0.3,
+    "maxTokens": 700,
     "contextMessages": 12
   }
 }

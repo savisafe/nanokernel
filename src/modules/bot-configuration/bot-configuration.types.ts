@@ -10,6 +10,11 @@ export interface BotConfigurationFileJson {
   snippets?: SnippetSpec[] | null;
 }
 
+export interface ResolvedBotLlmSettings {
+  temperature?: number;
+  maxTokens?: number;
+}
+
 export interface ResolvedBotConfiguration {
   id: string;
   llmPromptProfile: string;
@@ -17,4 +22,5 @@ export interface ResolvedBotConfiguration {
   promptProfile?: PromptProfileFileJson;
   dialog?: DialogConfigFileJson;
   snippets?: SnippetSpec[];
+  llm?: ResolvedBotLlmSettings;
 }

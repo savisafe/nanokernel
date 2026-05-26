@@ -30,6 +30,14 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
       : {}),
   };
 
+  const llm =
+    v2.llm?.temperature !== undefined || v2.llm?.maxTokens !== undefined
+      ? {
+          ...(v2.llm.temperature !== undefined ? { temperature: v2.llm.temperature } : {}),
+          ...(v2.llm.maxTokens !== undefined ? { maxTokens: v2.llm.maxTokens } : {}),
+        }
+      : undefined;
+
   return {
     id,
     llmPromptProfile: id,
@@ -39,5 +47,6 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     ...(v2.knowledge?.snippets && v2.knowledge.snippets.length > 0
       ? { snippets: v2.knowledge.snippets }
       : {}),
+    ...(llm ? { llm } : {}),
   };
 }

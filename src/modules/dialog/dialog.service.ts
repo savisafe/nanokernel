@@ -439,7 +439,7 @@ export class DialogService {
       })),
     ];
 
-    const out = await this.llmService.complete(messages);
+    const out = await this.llmService.complete(messages, snap.bot.llm);
     const replyText = out ?? templateFallback;
     return {
       replyText,

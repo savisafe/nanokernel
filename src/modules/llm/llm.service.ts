@@ -5,6 +5,13 @@ export interface LlmChatMessage {
   content: string;
 }
 
+export interface LlmCompleteOptions {
+  /** Per-bot override; fallback — env LLM_TEMPERATURE, далее дефолт 0.7. */
+  temperature?: number;
+  /** Per-bot override; fallback — env LLM_MAX_TOKENS, далее без лимита. */
+  maxTokens?: number;
+}
+
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
@@ -14,7 +21,7 @@ export class LlmService {
     return v === "true" || v === "1" || v === "yes";
   }
 
-  async complete(messages: LlmChatMessage[]): Promise<string | null> {
+  async complete(messages: LlmChatMessage[], options?: LlmCompleteOptions): Promise<string | null> {
     if (!this.isEnabled()) {
       return null;
     }
@@ -23,20 +30,17 @@ export class LlmService {
     const model = process.env.LLM_MODEL;
     const apiKey = process.env.LLM_API_KEY;
 
-    const maxTokensRaw = process.env.LLM_MAX_TOKENS;
-    const maxTokens =
-      maxTokensRaw !== undefined && maxTokensRaw !== ""
-        ? Number(maxTokensRaw)
-        : undefined;
+    const maxTokens = this.resolveMaxTokens(options?.maxTokens);
+    const temperature = this.resolveTemperature(options?.temperature);
 
     const url = `${baseUrl}/chat/completions`;
     try {
       const body: Record<string, unknown> = {
         model,
         messages,
-        temperature: Number(process.env.LLM_TEMPERATURE ?? 0.7),
+        temperature,
       };
-      if (maxTokens !== undefined && !Number.isNaN(maxTokens) && maxTokens > 0) {
+      if (maxTokens !== undefined && maxTokens > 0) {
         body.max_tokens = maxTokens;
       }
 
@@ -91,6 +95,26 @@ export class LlmService {
       }
       return null;
     }
+  }
+
+  private resolveTemperature(override: number | undefined): number {
+    if (typeof override === "number" && Number.isFinite(override)) {
+      return override;
+    }
+    const env = Number(process.env.LLM_TEMPERATURE);
+    return Number.isFinite(env) ? env : 0.7;
+  }
+
+  private resolveMaxTokens(override: number | undefined): number | undefined {
+    if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+      return override;
+    }
+    const raw = process.env.LLM_MAX_TOKENS;
+    if (raw === undefined || raw === "") {
+      return undefined;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   private shouldLogLlmDev(): boolean {
