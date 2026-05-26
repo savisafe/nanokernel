@@ -1,4 +1,4 @@
-export type BotUsageKind = "snippet" | "llm" | "no_llm_fallback";
+export type BotUsageKind = "snippet" | "llm" | "no_llm_fallback" | "fsm";
 
 export interface BotUsageLlmTokens {
   promptTokens?: number;

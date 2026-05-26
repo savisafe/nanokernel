@@ -12,6 +12,7 @@ import { RagModule } from "./rag/rag.module";
 import { SnippetsModule } from "./snippets/snippets.module";
 import { BotUsageModule } from "./bot-usage/bot-usage.module";
 import { SkillsModule } from "./skills/skills.module";
+import { ScriptsModule } from "./scripts/scripts.module";
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { SkillsModule } from "./skills/skills.module";
     SnippetsModule,
     BotUsageModule,
     SkillsModule,
+    ScriptsModule,
     DialogModule,
     DialogQueueModule,
     HealthModule,

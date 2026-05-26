@@ -12,6 +12,7 @@ import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from ".
 import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
 import { BotUsageService } from "../bot-usage/bot-usage.service";
 import { SkillsRegistry } from "../skills/skills-registry.service";
+import { ScriptRunnerService } from "../scripts/script-runner.service";
 import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
@@ -53,6 +54,7 @@ export class DialogService {
     private readonly snippetMatcher: SnippetMatcherService,
     private readonly botUsage: BotUsageService,
     private readonly skills: SkillsRegistry,
+    private readonly scriptRunner: ScriptRunnerService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
@@ -203,6 +205,28 @@ export class DialogService {
         text: input.text,
       },
     });
+
+    const fsmOutcome = await this.scriptRunner.step({
+      conversation,
+      bot: snap.bot,
+      userText: input.text,
+    });
+    if (fsmOutcome.handled) {
+      if (isDevelopment()) {
+        this.logger.debug(
+          `fsm bot=${snap.bot.id} script=${fsmOutcome.scriptName} terminal=${fsmOutcome.terminal}`,
+        );
+      }
+      await this.botUsage.recordFsm(snap.bot.id, conversation.id, fsmOutcome.scriptName);
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: fsmOutcome.reply,
+        },
+      });
+      return { replyText: fsmOutcome.reply, stage: conversation.stage };
+    }
 
     const snippetHit = this.snippetMatcher.match(input.text, snap.bot);
     if (snippetHit) {

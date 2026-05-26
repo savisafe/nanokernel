@@ -1,6 +1,7 @@
 import type { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
 import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
 import type { SnippetSpec } from "../snippets/snippet.types";
+import type { ScriptSpec } from "./v2/bot-config-v2.types";
 
 export interface BotConfigurationFileJson {
   llmPromptProfile?: string | null;
@@ -25,4 +26,6 @@ export interface ResolvedBotConfiguration {
   llm?: ResolvedBotLlmSettings;
   /** Имена включённых skills (резолв через SkillsRegistry в DialogService). */
   skills?: string[];
+  /** FSM-скрипты бота (имя → спецификация). */
+  scripts?: Record<string, ScriptSpec>;
 }

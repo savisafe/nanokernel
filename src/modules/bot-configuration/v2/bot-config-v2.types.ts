@@ -58,6 +58,38 @@ const llmSchema = z.object({
   contextMessages: z.number().int().min(2).max(50).optional(),
 });
 
+const slotSpecSchema = z.object({
+  /** Что спросить у клиента, когда подходим к этому слоту. */
+  ask: z.string().min(1),
+  /** Regex-валидация ввода (флаги "iu"). Пусто — принимаем любой непустой ответ. */
+  validate: z.string().optional(),
+  /** Сообщение при провале валидации; если не задано — re-ask с уточнением. */
+  validateErrorReply: z.string().optional(),
+});
+
+const scriptSpecSchema = z.object({
+  description: z.string().optional(),
+  trigger: z.object({
+    /** Regex-паттерны, по любому совпадению скрипт запускается. */
+    intent: z.array(z.string().min(1)).min(1),
+  }),
+  slots: z.record(z.string().min(1), slotSpecSchema),
+  /** Порядок прохождения слотов (имена должны быть из slots). */
+  order: z.array(z.string().min(1)).min(1),
+  /** Сообщение-подтверждение со {slot} плейсхолдерами. */
+  confirm: z.string().min(1),
+  onConfirm: z.object({
+    /** Имя skill, которому передаются собранные слоты. */
+    skill: z.string().min(1),
+    /** Текст при успехе ({slot} плейсхолдеры доступны). */
+    successReply: z.string().min(1),
+    /** Текст при ошибке выполнения skill. */
+    errorReply: z.string().min(1),
+  }),
+  /** Текст при отмене клиентом. */
+  onCancel: z.string().min(1),
+});
+
 export const botConfigV2Schema = z.object({
   schemaVersion: z.literal(2),
   id: z.string().min(1).optional(),
@@ -70,7 +102,11 @@ export const botConfigV2Schema = z.object({
   llm: llmSchema.optional(),
   /** Имена skills, которые включены для этого бота (зарегистрированы в SkillsRegistry). */
   skills: z.array(z.string().min(1)).optional(),
+  /** FSM-скрипты: ключ — имя сценария ("booking"), значение — спецификация. */
+  scripts: z.record(z.string().min(1), scriptSpecSchema).optional(),
 });
 
 export type BotConfigV2 = z.infer<typeof botConfigV2Schema>;
 export type SnippetSpecV2 = z.infer<typeof snippetSpecSchema>;
+export type ScriptSpec = z.infer<typeof scriptSpecSchema>;
+export type SlotSpec = z.infer<typeof slotSpecSchema>;

@@ -41,6 +41,15 @@ export class BotUsageService {
     });
   }
 
+  async recordFsm(botId: string, conversationId: string, scriptName: string): Promise<void> {
+    await this.safeCreate({
+      botId,
+      conversationId,
+      kind: "fsm",
+      snippetId: scriptName,
+    });
+  }
+
   /** Сводка за последние N часов; если botId не задан — по всем. */
   async summarize(options: { botId?: string; sinceHours?: number } = {}): Promise<BotUsageSummary> {
     const sinceHours = options.sinceHours ?? 24;
@@ -53,7 +62,7 @@ export class BotUsageService {
 
     const summary: BotUsageSummary = {
       total: rows.length,
-      byKind: { snippet: 0, llm: 0, no_llm_fallback: 0 },
+      byKind: { snippet: 0, llm: 0, no_llm_fallback: 0, fsm: 0 },
       promptTokens: 0,
       completionTokens: 0,
       zeroTokenReplies: 0,
@@ -63,7 +72,7 @@ export class BotUsageService {
       if (kind in summary.byKind) {
         summary.byKind[kind] += 1;
       }
-      if (kind === "snippet" || kind === "no_llm_fallback") {
+      if (kind === "snippet" || kind === "no_llm_fallback" || kind === "fsm") {
         summary.zeroTokenReplies += 1;
       }
       if (typeof r.promptTokens === "number") {

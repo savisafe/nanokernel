@@ -4,8 +4,9 @@ import { SkillsRegistry } from "./skills-registry.service";
 import { SKILL_PROVIDERS_TOKEN, Skill } from "./skill.contract";
 import { LookupServiceSkill } from "./skills/lookup-service.skill";
 import { LookupProductSkill } from "./skills/lookup-product.skill";
+import { BookSlotSkill } from "./skills/book-slot.skill";
 
-const SKILL_CLASSES = [LookupServiceSkill, LookupProductSkill] as const;
+const SKILL_CLASSES = [LookupServiceSkill, LookupProductSkill, BookSlotSkill] as const;
 
 @Global()
 @Module({
