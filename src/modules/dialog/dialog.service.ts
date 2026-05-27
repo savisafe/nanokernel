@@ -401,10 +401,14 @@ export class DialogService {
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
+    // Per-bot override победит дефолтный templateFallback. Это даёт каждому боту
+    // возможность держать персону даже в моменты, когда LLM падает/таймаутится.
+    const llmFallback = snap.bot.guardrails?.llmFallbackReply ?? templateFallback;
+
     if (!this.llmService.isEnabled()) {
       await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
-        replyText: templateFallback,
+        replyText: llmFallback,
         diagnostics: await this.buildDiagnosticsForDisabledLlm(snap, stage, channel),
       };
     }
@@ -467,8 +471,13 @@ export class DialogService {
       }
     } else {
       await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
+      this.logger.warn(
+        `LLM returned null (bot=${snap.bot.id}, conv=${conversationId}) — falling back to ${
+          snap.bot.guardrails?.llmFallbackReply ? "per-bot llmFallbackReply" : "template default"
+        }`,
+      );
     }
-    const replyText = out?.text ?? templateFallback;
+    const replyText = out?.text ?? llmFallback;
     return {
       replyText,
       diagnostics: {

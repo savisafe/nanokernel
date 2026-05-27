@@ -31,6 +31,7 @@ export interface ResolvedBotGuardrails {
   safetyChecks?: SafetyCategory[];
   refuseReply?: string;
   rateLimitReply?: string;
+  llmFallbackReply?: string;
   rateLimit?: { requests: number; windowSeconds: number };
   burstLimit?: ResolvedBurstLimit;
   repeatLimit?: ResolvedRepeatLimit;

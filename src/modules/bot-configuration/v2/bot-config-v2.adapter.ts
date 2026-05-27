@@ -43,6 +43,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     (v2.guardrails.safetyChecks?.length ||
       v2.guardrails.refuseReply ||
       v2.guardrails.rateLimitReply ||
+      v2.guardrails.llmFallbackReply ||
       v2.guardrails.rateLimit ||
       v2.guardrails.burstLimit ||
       v2.guardrails.repeatLimit ||
@@ -54,6 +55,9 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
           ...(v2.guardrails.refuseReply ? { refuseReply: v2.guardrails.refuseReply } : {}),
           ...(v2.guardrails.rateLimitReply
             ? { rateLimitReply: v2.guardrails.rateLimitReply }
+            : {}),
+          ...(v2.guardrails.llmFallbackReply
+            ? { llmFallbackReply: v2.guardrails.llmFallbackReply }
             : {}),
           ...(v2.guardrails.rateLimit ? { rateLimit: v2.guardrails.rateLimit } : {}),
           ...(v2.guardrails.burstLimit ? { burstLimit: v2.guardrails.burstLimit } : {}),

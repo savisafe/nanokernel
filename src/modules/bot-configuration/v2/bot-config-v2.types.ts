@@ -43,6 +43,12 @@ const guardrailsSchema = z.object({
   refuseReply: z.string().min(1).optional(),
   /** Текст отказа при срабатывании rate-limit. */
   rateLimitReply: z.string().min(1).optional(),
+  /**
+   * Текст-fallback, когда LLM недоступен (таймаут / API-ошибка / отключён через env).
+   * Если не задан — используется нейтральный дефолт из DIALOG_SUBSYSTEM_DEFAULTS.
+   * Стоит писать в персоне бота: «Похоже, у меня технический сбой, напишите через минуту».
+   */
+  llmFallbackReply: z.string().min(1).optional(),
   /** Лимит входящих сообщений per user (msg/min). */
   rateLimit: z
     .object({
