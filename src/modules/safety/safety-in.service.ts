@@ -40,6 +40,9 @@ export class SafetyInService {
     if (r.allowed) {
       return { blocked: false };
     }
+    this.logger.warn(
+      `rate-limit block bot=${bot.id} user=${externalUserId} limit=${cfg.requests}/${cfg.windowSeconds}s`,
+    );
     return {
       blocked: true,
       category: "rate_limit",
@@ -69,7 +72,7 @@ export class SafetyInService {
     return {
       blocked: true,
       category: "burst",
-      reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.burst,
+      reply: cfg.reply ?? DEFAULT_REFUSE_REPLIES.burst,
       matched: r.reason,
       silent: cfg.silent ?? false,
     };
@@ -101,7 +104,7 @@ export class SafetyInService {
     return {
       blocked: true,
       category: "repeat",
-      reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.repeat,
+      reply: cfg.reply ?? DEFAULT_REFUSE_REPLIES.repeat,
       matched: r.reason,
       silent: cfg.silent ?? false,
     };

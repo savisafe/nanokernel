@@ -14,6 +14,7 @@ export interface ResolvedBurstLimit {
   windowMs: number;
   cooldownSeconds: number;
   silent?: boolean;
+  reply?: string;
 }
 
 export interface ResolvedRepeatLimit {
@@ -23,6 +24,7 @@ export interface ResolvedRepeatLimit {
   historySize?: number;
   nearDuplicatePrefix?: number;
   silent?: boolean;
+  reply?: string;
 }
 
 export interface ResolvedBotGuardrails {

@@ -64,6 +64,8 @@ const guardrailsSchema = z.object({
       cooldownSeconds: z.number().int().positive(),
       /** Если true — на блоке отвечать пустотой (для скрытности фильтра). */
       silent: z.boolean().optional(),
+      /** Per-category override текста ответа. Иначе — DEFAULT_REFUSE_REPLIES.burst. */
+      reply: z.string().min(1).optional(),
     })
     .optional(),
   /**
@@ -87,6 +89,8 @@ const guardrailsSchema = z.object({
       nearDuplicatePrefix: z.number().int().min(1).max(200).optional(),
       /** Если true — на блоке отвечать пустотой. */
       silent: z.boolean().optional(),
+      /** Per-category override текста ответа. Иначе — DEFAULT_REFUSE_REPLIES.repeat. */
+      reply: z.string().min(1).optional(),
     })
     .optional(),
   /** Cap на длину LLM-ответа (символов). */

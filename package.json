@@ -14,7 +14,8 @@
     "prisma:studio": "prisma studio",
     "telegram:webhook:set": "node scripts/telegram-webhook.mjs set",
     "telegram:webhook:info": "node scripts/telegram-webhook.mjs info",
-    "telegram:webhook:delete": "node scripts/telegram-webhook.mjs delete"
+    "telegram:webhook:delete": "node scripts/telegram-webhook.mjs delete",
+    "safety:reset": "node scripts/safety-reset.mjs"
   },
   "keywords": [],
   "author": "",
