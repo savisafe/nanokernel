@@ -244,7 +244,11 @@ export class TelegramService {
     const sliced =
       finalText.length > MAX_DISPLAY_CHARS ? finalText.slice(0, MAX_DISPLAY_CHARS) : finalText;
     let sent: boolean;
-    if (placeholderId !== null) {
+    if (!finalText) {
+      // Silent-блок (антифлуд с silent:true вернул пустой replyText) — ничего не шлём,
+      // placeholder остаётся «висеть» только если уже был создан streaming'ом.
+      sent = true;
+    } else if (placeholderId !== null) {
       if (sliced !== lastShown) {
         sent = await this.editMessageText(message.chatId, placeholderId, sliced);
       } else {

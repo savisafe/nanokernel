@@ -50,6 +50,45 @@ const guardrailsSchema = z.object({
       windowSeconds: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Burst-детектор: ловит резкие всплески (несколько сообщений за секунды).
+   * Дополняет `rateLimit` (тот считает суммарно за окно, а здесь — плотность).
+   */
+  burstLimit: z
+    .object({
+      /** Сколько сообщений в окне `windowMs` уже считаются burst'ом. */
+      messages: z.number().int().min(2),
+      /** Окно наблюдения в миллисекундах. */
+      windowMs: z.number().int().min(100),
+      /** Длительность cooldown после срабатывания (секунд). */
+      cooldownSeconds: z.number().int().positive(),
+      /** Если true — на блоке отвечать пустотой (для скрытности фильтра). */
+      silent: z.boolean().optional(),
+    })
+    .optional(),
+  /**
+   * Detect повторов: одинаковые/похожие сообщения подряд.
+   * Хеш считается по нормализованному тексту (lower + trim + collapse whitespace).
+   */
+  repeatLimit: z
+    .object({
+      /** Сколько повторов одного хеша в недавней истории считаются спамом. */
+      occurrences: z.number().int().min(2),
+      /** Окно подсчёта (секунд). История хранится не дольше. */
+      windowSeconds: z.number().int().positive(),
+      /** Длительность cooldown после срабатывания (секунд). */
+      cooldownSeconds: z.number().int().positive(),
+      /** Сколько последних сообщений держать в истории (для подсчёта повторов). */
+      historySize: z.number().int().min(2).max(50).optional(),
+      /**
+       * Сравнивать по первым N символам нормализованного текста (near-duplicate).
+       * Пусто — сравнение по полному хешу.
+       */
+      nearDuplicatePrefix: z.number().int().min(1).max(200).optional(),
+      /** Если true — на блоке отвечать пустотой. */
+      silent: z.boolean().optional(),
+    })
+    .optional(),
   /** Cap на длину LLM-ответа (символов). */
   maxReplyChars: z.number().int().positive().optional(),
 });

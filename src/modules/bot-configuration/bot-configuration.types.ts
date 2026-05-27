@@ -9,11 +9,29 @@ export interface ResolvedBotLlmSettings {
   maxTokens?: number;
 }
 
+export interface ResolvedBurstLimit {
+  messages: number;
+  windowMs: number;
+  cooldownSeconds: number;
+  silent?: boolean;
+}
+
+export interface ResolvedRepeatLimit {
+  occurrences: number;
+  windowSeconds: number;
+  cooldownSeconds: number;
+  historySize?: number;
+  nearDuplicatePrefix?: number;
+  silent?: boolean;
+}
+
 export interface ResolvedBotGuardrails {
   safetyChecks?: SafetyCategory[];
   refuseReply?: string;
   rateLimitReply?: string;
   rateLimit?: { requests: number; windowSeconds: number };
+  burstLimit?: ResolvedBurstLimit;
+  repeatLimit?: ResolvedRepeatLimit;
   maxReplyChars?: number;
 }
 

@@ -44,6 +44,8 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
       v2.guardrails.refuseReply ||
       v2.guardrails.rateLimitReply ||
       v2.guardrails.rateLimit ||
+      v2.guardrails.burstLimit ||
+      v2.guardrails.repeatLimit ||
       v2.guardrails.maxReplyChars)
       ? {
           ...(v2.guardrails.safetyChecks?.length
@@ -54,6 +56,8 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
             ? { rateLimitReply: v2.guardrails.rateLimitReply }
             : {}),
           ...(v2.guardrails.rateLimit ? { rateLimit: v2.guardrails.rateLimit } : {}),
+          ...(v2.guardrails.burstLimit ? { burstLimit: v2.guardrails.burstLimit } : {}),
+          ...(v2.guardrails.repeatLimit ? { repeatLimit: v2.guardrails.repeatLimit } : {}),
           ...(v2.guardrails.maxReplyChars !== undefined
             ? { maxReplyChars: v2.guardrails.maxReplyChars }
             : {}),

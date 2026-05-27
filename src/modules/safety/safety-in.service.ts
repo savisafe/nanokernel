@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
 import { RateLimitService } from "./rate-limit.service";
+import { FloodProtectionService } from "./flood-protection.service";
 import { INJECTION_PATTERNS } from "./injection-patterns";
 import { SAFETY_KEYWORDS } from "./safety-keywords";
 import { DEFAULT_REFUSE_REPLIES, SafetyCategory, SafetyInResult } from "./safety.types";
@@ -13,7 +14,10 @@ export class SafetyInService {
     (p) => new RegExp(p, "iu"),
   );
 
-  constructor(private readonly rateLimit: RateLimitService) {}
+  constructor(
+    private readonly rateLimit: RateLimitService,
+    private readonly flood: FloodProtectionService,
+  ) {}
 
   /**
    * Rate-limit проверяется отдельно от topic/injection, потому что обычно нужен
@@ -41,6 +45,65 @@ export class SafetyInService {
       category: "rate_limit",
       reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.rate_limit,
       matched: `${cfg.requests}/${cfg.windowSeconds}s`,
+    };
+  }
+
+  /**
+   * Burst-чек: ловит резкие всплески (N сообщений за миллисекунды).
+   * Дешёвый Redis-вызов, выполняется ДО content-safety и FSM.
+   */
+  async checkBurst(
+    channel: string,
+    externalUserId: string,
+    bot: ResolvedBotConfiguration,
+  ): Promise<SafetyInResult> {
+    const cfg = bot.guardrails?.burstLimit;
+    if (!cfg) {
+      return { blocked: false };
+    }
+    const r = await this.flood.checkBurst(`${bot.id}:${channel}:${externalUserId}`, cfg);
+    if (!r.blocked) {
+      return { blocked: false };
+    }
+    this.logger.warn(`burst block bot=${bot.id} user=${externalUserId} reason="${r.reason}"`);
+    return {
+      blocked: true,
+      category: "burst",
+      reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.burst,
+      matched: r.reason,
+      silent: cfg.silent ?? false,
+    };
+  }
+
+  /**
+   * Repeat-чек: ловит копипасту/повторяющийся мусор. Считает по нормализованному
+   * хешу последних `historySize` сообщений.
+   */
+  async checkRepeat(
+    channel: string,
+    externalUserId: string,
+    text: string,
+    bot: ResolvedBotConfiguration,
+  ): Promise<SafetyInResult> {
+    const cfg = bot.guardrails?.repeatLimit;
+    if (!cfg) {
+      return { blocked: false };
+    }
+    const r = await this.flood.checkRepeat(
+      `${bot.id}:${channel}:${externalUserId}`,
+      text,
+      cfg,
+    );
+    if (!r.blocked) {
+      return { blocked: false };
+    }
+    this.logger.warn(`repeat block bot=${bot.id} user=${externalUserId} reason="${r.reason}"`);
+    return {
+      blocked: true,
+      category: "repeat",
+      reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.repeat,
+      matched: r.reason,
+      silent: cfg.silent ?? false,
     };
   }
 

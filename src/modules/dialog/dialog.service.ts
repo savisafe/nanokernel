@@ -147,6 +147,17 @@ export class DialogService {
       return { replyText: rl.reply, stage: conversation.stage };
     }
 
+    // Burst-детектор: плотность отправки (N сообщений за мс). Срабатывает раньше,
+    // чем суммарный rateLimit, чтобы поймать всплески внутри окна.
+    const burst = await this.safetyIn.checkBurst(input.channel, input.externalUserId, snap.bot);
+    if (burst.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "burst");
+      return {
+        replyText: burst.silent ? "" : burst.reply ?? "",
+        stage: conversation.stage,
+      };
+    }
+
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -154,6 +165,29 @@ export class DialogService {
         text: input.text,
       },
     });
+
+    // Repeat-чек: ловит копипасту и циклический спам по нормализованному хешу.
+    // Идёт после сохранения в БД, чтобы повтор всё равно был виден в истории диалога.
+    const repeat = await this.safetyIn.checkRepeat(
+      input.channel,
+      input.externalUserId,
+      input.text,
+      snap.bot,
+    );
+    if (repeat.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "repeat");
+      const replyText = repeat.silent ? "" : repeat.reply ?? "";
+      if (replyText) {
+        await this.prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            role: "assistant",
+            text: replyText,
+          },
+        });
+      }
+      return { replyText, stage: conversation.stage };
+    }
 
     // Content safety: injection + safety-topics. Запускается ДО FSM/snippet/LLM,
     // чтобы перехватить попытки jailbreak / запрос мед/юр-консультации в любом состоянии.

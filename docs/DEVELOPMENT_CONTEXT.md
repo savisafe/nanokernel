@@ -9,7 +9,7 @@
 
 ### BotConfig v2 — единый декларативный формат
 - `src/modules/bot-configuration/v2/` — zod-схема + адаптер + system-prompt-builder.
-- Поля: `persona` (role/language/tone/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
+- Поля: `persona` (role/language/tone/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimitReply, rateLimit, burstLimit, repeatLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
 - Адаптер собирает `dialog.systemPrompt.template` из декларативных полей; runtime читает один формат, без legacy ветки.
 - Файлы: `config/configurations/<id>.json` со `schemaVersion: 2`. Legacy v1 формат снесён в Phase 9a.
 
@@ -21,13 +21,13 @@
 - Legacy маршрут `POST /webhooks/telegram` сохранён для single-bot deploy (`BOT_CONFIGURATION` env + `TELEGRAM_BOT_TOKEN`).
 - Скрипт `scripts/telegram-webhook.mjs` поддерживает `set/info/delete [<bot-id>]` — массово или per-bot.
 
-### Dialog Pipeline (8 явных стадий)
+### Dialog Pipeline (10 явных стадий)
 ```
-[1] rate-limit → [2] save user msg → [3] safety-in (content)
-  → [4] FSM step → [5] snippet → [6] LLM (tools + streaming)
-  → [7] safety-out → [8] save assistant msg
+[1] rate-limit → [2] burst-detect → [3] save user msg → [4] repeat-detect
+  → [5] safety-in (content) → [6] FSM step → [7] snippet
+  → [8] LLM (tools + streaming) → [9] safety-out → [10] save assistant msg
 ```
-Каждая стадия может ответить и завершить ход. Безопасность раньше LLM, FSM раньше snippet'а, snippet раньше LLM.
+Каждая стадия может ответить и завершить ход. Антифлуд — раньше LLM и раньше БД (burst), повтор — после записи в БД (чтобы спам был виден в истории, но не уходил в LLM). FSM раньше snippet, snippet раньше LLM.
 
 ### Слои runtime
 
@@ -35,7 +35,12 @@
 - **ScriptRunnerService** (`src/modules/scripts/`) — FSM. Триггер по regex `intent[]`, последовательный сбор слотов (с опц. regex-валидацией), `confirm`-шаг, dispatch skill при подтверждении. Состояние в `Conversation.activeScript / activeScriptState / activeScriptSlots`. CANCEL/YES/NO детекторы используют explicit suffix `[\s,.!?]|$` (не `\b` — кириллица).
 - **SkillsRegistry + DomainDataService** (`src/modules/skills/`) — реестр через DI-токен `SKILL_PROVIDERS_TOKEN`. Реальные skills: `lookup_service` (salon), `lookup_product` (pipes), `book_slot` (FSM action — пишет в `Booking`). Данные: `config/data/<botId>/<entity>.json`.
 - **LlmService** (`src/modules/llm/`) — OpenAI-compatible (`/chat/completions`). Tool calls (function calling), SSE streaming с `stream_options.include_usage`. `completeWithTools` лупит до 4 итераций, на последней — без tools для финального текста. `onTextDelta` callback в `LlmCompleteOptions` для streaming.
-- **SafetyInService** (`src/modules/safety/`) — `checkRateLimit` (Redis sliding window per `{bot,channel,user}`), `checkContent` (injection-regex RU+EN + topic-keywords для `medical/legal/financial/self_harm/injection`). Injection-паттерны используют `[\p{L}\d_]+` (`\w` в JS не покрывает кириллицу даже с `/u`). Opt-in через `guardrails.safetyChecks`.
+- **SafetyInService** (`src/modules/safety/`) — `checkRateLimit` (Redis fixed-window per `{bot,channel,user}`), `checkBurst` / `checkRepeat` (flood-защита, см. FloodProtectionService), `checkContent` (injection-regex RU+EN + topic-keywords для `medical/legal/financial/self_harm/injection`). Injection-паттерны используют `[\p{L}\d_]+` (`\w` в JS не покрывает кириллицу даже с `/u`). Opt-in через `guardrails.safetyChecks`.
+- **FloodProtectionService** (`src/modules/safety/flood-protection.service.ts`) — два сигнала антифлуда поверх Redis:
+  - **Burst** (`guardrails.burstLimit`): `ZSET safety:burst:{key}` + cooldown sentinel. Если ≥ `messages` событий за `windowMs` мс — блок и cooldown `cooldownSeconds`. Срабатывает ДО записи в БД.
+  - **Repeat** (`guardrails.repeatLimit`): `LIST safety:repeat:{key}` хранит последние `historySize` хешей. Хеш — SHA1(base64url, 16 chars) от нормализованного текста (lower + `ё→е` + collapse whitespace + опц. prefix `nearDuplicatePrefix`). Если хеш встречается ≥ `occurrences` раз в окне — блок и cooldown. Запускается ПОСЛЕ записи в БД (повтор должен быть виден в истории).
+  - Оба чека fail-open при ошибках Redis. На блоке можно ответить фиксированным текстом или молча (`silent: true`).
+  - Категории `BotUsage.snippetId` для блоков: `"burst"`, `"repeat"` (рядом с существующим `"rate_limit"`).
 - **SafetyOutService** — cap длины ответа (default 4000, override через `guardrails.maxReplyChars`).
 - **BotUsageService** (`src/modules/bot-usage/`) — событие на каждый ход: `kind ∈ {snippet, llm, no_llm_fallback, fsm, safety_block}`. Парсит `usage` из ответа LLM. `summarize({botId, sinceHours})` для `GET /health/usage?bot=<id>&hours=<n>`.
 - **DialogService** (`src/modules/dialog/`) — оркестратор pipeline. `process(input, { onLlmTextDelta? })` — стриминг callback прокидывается в LlmService.
