@@ -4,6 +4,28 @@ import type { SnippetSpec } from "../snippets/snippet.types";
 import type { ScriptSpec } from "./v2/bot-config-v2.types";
 import type { SafetyCategory } from "../safety/safety.types";
 
+export interface ResolvedBusinessService {
+  name: string;
+  description?: string;
+  price?: string;
+  duration?: string;
+}
+
+export interface ResolvedBusinessInfo {
+  address?: string;
+  phone?: string;
+  onlineBookingUrl?: string;
+  workingHours?: string;
+  masters?: string[];
+  services?: ResolvedBusinessService[];
+}
+
+export interface ResolvedPersona {
+  role: string;
+  managerName?: string;
+  intro?: string;
+}
+
 export interface ResolvedBotLlmSettings {
   temperature?: number;
   maxTokens?: number;
@@ -64,4 +86,14 @@ export interface ResolvedBotConfiguration {
   guardrails?: ResolvedBotGuardrails;
   /** Privacy-чувствительные настройки канала: token-env, webhook-secret. */
   channel?: ResolvedBotChannel;
+  /**
+   * Имя/intro менеджера (используется как `{managerName}` в snippets/intro
+   * и в системном промпте «Тебя зовут …»).
+   */
+  persona?: ResolvedPersona;
+  /**
+   * Бизнес-факты бота (адрес/телефон/мастера/услуги). Доступны как
+   * `{placeholders}` в snippets/intro и инжектятся в системный промпт.
+   */
+  businessInfo?: ResolvedBusinessInfo;
 }

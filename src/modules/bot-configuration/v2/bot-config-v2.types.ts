@@ -24,8 +24,44 @@ const personaSchema = z.object({
   language: z.string().min(2).optional(),
   /** Тон: human — как живой человек, neutral — нейтральный, formal — деловой. */
   tone: z.enum(["human", "neutral", "formal"]).optional(),
-  /** Опциональная фраза-приветствие при первом контакте. */
+  /**
+   * Имя онлайн-менеджера/администратора, под которым представляется бот.
+   * Используется как `{managerName}` в `intro` и в `snippets[*].reply`,
+   * а также инжектится в системный промпт фразой «Тебя зовут {managerName}».
+   * Один источник истины — поменял здесь, и имя обновилось везде.
+   */
+  managerName: z.string().min(1).optional(),
+  /** Опциональная фраза-приветствие при первом контакте. Поддерживает {placeholders}. */
   intro: z.string().min(1).optional(),
+});
+
+const businessServiceSchema = z.object({
+  /** Название процедуры/товара/услуги (например, «Оформление бровей»). */
+  name: z.string().min(1),
+  /** Свободное описание/детали (опц.). */
+  description: z.string().optional(),
+  /** Цена в свободной форме: «6 000 ₸», «от 5 000 тг», «по запросу». */
+  price: z.string().optional(),
+  /** Длительность процедуры (опц.): «60 мин», «1.5 часа». */
+  duration: z.string().optional(),
+});
+
+const businessInfoSchema = z.object({
+  /** Адрес студии/салона/офиса (используется в `{address}` и в системном промпте). */
+  address: z.string().optional(),
+  /** Контактный телефон (используется в `{phone}`). */
+  phone: z.string().optional(),
+  /** URL для онлайн-записи (используется в `{onlineBookingUrl}`). */
+  onlineBookingUrl: z.string().optional(),
+  /** Время/график работы свободной строкой (используется в `{workingHours}`). */
+  workingHours: z.string().optional(),
+  /** Имена мастеров/сотрудников (доступны в `{masters}` через ", "-join). */
+  masters: z.array(z.string().min(1)).optional(),
+  /**
+   * Услуги с ценами. Доступны как `{servicesList}` (форматированный markdown-список),
+   * а также целиком уходят в системный промпт, чтобы LLM не выдумывал цены.
+   */
+  services: z.array(businessServiceSchema).optional(),
 });
 
 const guardrailsSchema = z.object({
@@ -183,6 +219,12 @@ export const botConfigV2Schema = z.object({
   skills: z.array(z.string().min(1)).optional(),
   /** FSM-скрипты: ключ — имя сценария ("booking"), значение — спецификация. */
   scripts: z.record(z.string().min(1), scriptSpecSchema).optional(),
+  /**
+   * Бизнес-информация: адрес, телефон, мастера, услуги с ценами.
+   * Все поля доступны как `{placeholders}` в intro/snippets и инжектятся
+   * в системный промпт как факты (чтобы LLM не выдумывал).
+   */
+  businessInfo: businessInfoSchema.optional(),
   /** Привязка к каналам: tokenEnv + webhookSecret per channel. */
   channel: channelSchema.optional(),
 });

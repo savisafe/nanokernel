@@ -9,7 +9,8 @@
 
 ### BotConfig v2 — единый декларативный формат
 - `src/modules/bot-configuration/v2/` — zod-схема + адаптер + system-prompt-builder.
-- Поля: `persona` (role/language/tone/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimitReply, rateLimit, burstLimit, repeatLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
+- Поля: `persona` (role/language/tone/managerName/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimitReply, llmFallbackReply, rateLimit, burstLimit, repeatLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM), `businessInfo` (address, phone, onlineBookingUrl, workingHours, masters[], services[{name,price?,duration?,description?}]), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
+- **Template-плейсхолдеры в адаптере**: `persona.intro`, `snippets[*].reply`, `guardrails.*Reply`, `scripts.*.{ask, validateErrorReply, confirm, on*Reply, onCancel}` прогоняются через `interpolateTemplate` с переменными из `persona.managerName` + `businessInfo` + `name`. Доступные плейсхолдеры: `{managerName}`, `{companyName}`, `{address}`, `{phone}`, `{onlineBookingUrl}`, `{workingHours}`, `{masters}` (join ", "), `{servicesList}` (форматированный markdown). При коллизии с FSM-слотом (например, `{phone}` тоже слот в `booking`) — переменная исключается из vars per-script, плейсхолдер остаётся для runtime-резолва.
 - Адаптер собирает `dialog.systemPrompt.template` из декларативных полей; runtime читает один формат, без legacy ветки.
 - Файлы: `config/configurations/<id>.json` со `schemaVersion: 2`. Legacy v1 формат снесён в Phase 9a.
 

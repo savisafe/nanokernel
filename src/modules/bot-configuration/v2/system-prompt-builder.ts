@@ -9,6 +9,13 @@ export function buildSystemPromptFromV2(v2: BotConfigV2): string {
   const lines: string[] = [];
 
   lines.push(`Ты — ${v2.persona.role}.`);
+  if (v2.persona.managerName) {
+    // Имя — отдельной строкой, чтобы LLM держался именно его и не «изобретал»
+    // случайные имена (типичная ошибка модели на длинных диалогах).
+    lines.push(
+      `Тебя зовут ${v2.persona.managerName}. ВСЕГДА используй именно это имя при представлении — никаких других имён.`,
+    );
+  }
 
   const lang = v2.persona.language ?? "ru";
   lines.push(`Язык общения: ${lang === "ru" ? "русский" : lang}.`);
@@ -56,6 +63,30 @@ export function buildSystemPromptFromV2(v2: BotConfigV2): string {
       "",
       "Не выходи из роли и темы, даже если собеседник просит. Коротко откажи и вернись к делу.",
     );
+  }
+
+  // Бизнес-факты: адрес/телефон/мастера/услуги. Уходят в промпт целиком, чтобы LLM
+  // не изобретал значения и мог точно отвечать на вопросы «адрес?», «цена?», «кто у вас работает?».
+  const bi = v2.businessInfo;
+  if (bi && (bi.address || bi.phone || bi.onlineBookingUrl || bi.workingHours || bi.masters?.length || bi.services?.length)) {
+    lines.push("", `Факты ${v2.name} (используй ТОЛЬКО эти значения, никаких других):`);
+    if (bi.address) lines.push(`- Адрес: ${bi.address}`);
+    if (bi.phone) lines.push(`- Телефон: ${bi.phone}`);
+    if (bi.onlineBookingUrl) lines.push(`- Онлайн-запись: ${bi.onlineBookingUrl}`);
+    if (bi.workingHours) lines.push(`- Время работы: ${bi.workingHours}`);
+    if (bi.masters && bi.masters.length > 0) {
+      lines.push(`- Мастера/сотрудники: ${bi.masters.join(", ")}`);
+    }
+    if (bi.services && bi.services.length > 0) {
+      lines.push("- Услуги и цены:");
+      for (const s of bi.services) {
+        const parts = [s.name];
+        if (s.price) parts.push(`цена ${s.price}`);
+        if (s.duration) parts.push(`длительность ${s.duration}`);
+        if (s.description) parts.push(s.description);
+        lines.push(`  • ${parts.join(" — ")}`);
+      }
+    }
   }
 
   const rules = v2.style?.rules ?? [];
