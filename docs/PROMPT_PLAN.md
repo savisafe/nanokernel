@@ -123,5 +123,6 @@ Cross-cutting:        Observability · Token Budget · Tenancy · Versioning
 
 ## Текущий статус
 
-- **Фаза 0:** этот документ.
-- **Фаза 1:** в работе сразу следом.
+> **Фазы 0–9 завершены** (2026-05-26). Этот документ — историчес­кий план постройки; актуальное состояние платформы и change-log см. в `DEVELOPMENT_CONTEXT.md`, дальнейшая работа — в `TODO.md`.
+>
+> **Дрейф путей:** после миграции на per-business layout канон — `config/businesses/<id>/{configuration.json, data/}` (а не `config/configurations/` и `config/data/`, как в тексте фаз выше). Резолв путей — `src/modules/shared/config-paths.ts`. Описания фаз ниже оставлены как история.
