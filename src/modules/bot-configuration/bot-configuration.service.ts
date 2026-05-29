@@ -1,9 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
-import { readFileSync, readdirSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { ResolvedBotConfiguration } from "./bot-configuration.types";
 import { adaptV2ToResolved } from "./v2/bot-config-v2.adapter";
 import { botConfigV2Schema } from "./v2/bot-config-v2.types";
+import { listBotConfigIds, resolveBotConfigFile } from "../shared/config-paths";
 
 @Injectable()
 export class BotConfigurationService implements OnModuleInit {
@@ -63,18 +63,12 @@ export class BotConfigurationService implements OnModuleInit {
   }
 
   private discoverAll(): void {
-    const dir = path.resolve(process.cwd(), "config", "configurations");
-    let files: string[];
-    try {
-      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-    } catch (e) {
-      this.logger.warn(
-        `Cannot scan ${dir}: ${e instanceof Error ? e.message : String(e)}. Multi-bot routing disabled.`,
-      );
+    const ids = listBotConfigIds();
+    if (ids.length === 0) {
+      this.logger.warn("No bot configurations discovered. Multi-bot routing disabled.");
       return;
     }
-    for (const f of files) {
-      const id = f.slice(0, -5);
+    for (const id of ids) {
       if (this.resolveCache.has(id)) {
         this.indexSecret(this.resolveCache.get(id)!);
         continue;
@@ -109,12 +103,7 @@ export class BotConfigurationService implements OnModuleInit {
    * Legacy формат (v1 promptProfile/dialog без schemaVersion) больше не парсится.
    */
   private load(configurationId: string): ResolvedBotConfiguration {
-    const filePath = path.resolve(
-      process.cwd(),
-      "config",
-      "configurations",
-      `${configurationId}.json`,
-    );
+    const filePath = resolveBotConfigFile(configurationId);
 
     let raw: { schemaVersion?: number };
     try {

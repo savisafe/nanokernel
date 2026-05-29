@@ -183,6 +183,9 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
                   errorReply: ts(def.onConfirm.errorReply) ?? def.onConfirm.errorReply,
                 },
                 onCancel: ts(def.onCancel) ?? def.onCancel,
+                ...(def.onMaxAttempts
+                  ? { onMaxAttempts: ts(def.onMaxAttempts)! }
+                  : {}),
               },
             ];
           }),
@@ -226,7 +229,10 @@ function buildTemplateVars(v2: BotConfigV2): Record<string, string> {
     vars.masters = v2.businessInfo.masters.join(", ");
   }
   if (v2.businessInfo?.services && v2.businessInfo.services.length > 0) {
-    vars.servicesList = v2.businessInfo.services
+    // {servicesList} — без цен (для «что у вас есть»). Цены показываем только по
+    // явному запросу — через {servicesPriceList}.
+    vars.servicesList = v2.businessInfo.services.map((s) => `• ${s.name}`).join("\n");
+    vars.servicesPriceList = v2.businessInfo.services
       .map((s) => {
         const priceSuffix = s.price ? ` — ${s.price}` : "";
         return `• ${s.name}${priceSuffix}`;

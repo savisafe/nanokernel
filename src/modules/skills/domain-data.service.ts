@@ -1,10 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { readFileSync } from "node:fs";
-import path from "node:path";
+import { resolveDomainDataFile } from "../shared/config-paths";
 
 /**
  * Структурные данные бота (каталоги, прайсы, расписания и т.п.).
- * Хранение: `config/data/<botId>/<entity>.json`. Кеш — in-memory на процесс.
+ * Хранение (per-business): `config/businesses/<botId>/data/<entity>.json`
+ * (legacy-fallback `config/data/<botId>/<entity>.json`), резолв — `config-paths.ts`.
+ * Кеш — in-memory на процесс.
  *
  * В отличие от RAG/документов, эти данные читаются точечно skills, без чанкинга
  * и эмбеддингов — экономия токенов и предсказуемость ответов.
@@ -21,7 +23,7 @@ export class DomainDataService {
     if (cached !== undefined) {
       return cached as T[];
     }
-    const filePath = path.resolve(process.cwd(), "config", "data", botId, `${entity}.json`);
+    const filePath = resolveDomainDataFile(botId, entity);
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);

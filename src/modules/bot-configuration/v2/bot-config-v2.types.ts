@@ -180,6 +180,12 @@ const slotSpecSchema = z.object({
   validate: z.string().optional(),
   /** Сообщение при провале валидации; если не задано — re-ask с уточнением. */
   validateErrorReply: z.string().optional(),
+  /**
+   * Regex (флаги "iu") для предзаполнения слота из триггер-сообщения и недавней
+   * истории клиента. Capture-группа 1 — значение слота; если групп нет — берётся
+   * совпадение целиком. Извлечённое значение всё равно проходит `validate`.
+   */
+  extract: z.string().optional(),
 });
 
 const scriptSpecSchema = z.object({
@@ -203,6 +209,18 @@ const scriptSpecSchema = z.object({
   }),
   /** Текст при отмене клиентом. */
   onCancel: z.string().min(1),
+  /**
+   * Сколько неудачных попыток ввода одного слота допустимо до эскалации.
+   * По умолчанию 2 (см. ScriptRunnerService). При превышении FSM завершается
+   * сообщением `onMaxAttempts` и управление возвращается LLM.
+   */
+  maxSlotAttempts: z.number().int().min(1).max(10).optional(),
+  /**
+   * Текст эскалации, когда клиент не смог заполнить слот за `maxSlotAttempts`
+   * попыток. Поддерживает {placeholders} из businessInfo (напр. {onlineBookingUrl}).
+   * Если не задан — FSM просто завершается без спец-сообщения.
+   */
+  onMaxAttempts: z.string().min(1).optional(),
 });
 
 export const botConfigV2Schema = z.object({

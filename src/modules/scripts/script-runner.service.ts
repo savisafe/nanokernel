@@ -25,6 +25,13 @@ export class ScriptRunnerService {
   private static readonly NO_RE =
     /^\s*(нет|неа|не\s+верно|неправильно|no|n|-)(?:[\s,.!?]|$)/iu;
 
+  /** Неудачных попыток на слот до эскалации, если в конфиге не задано иное. */
+  private static readonly DEFAULT_MAX_SLOT_ATTEMPTS = 2;
+  /** Сколько последних сообщений клиента сканируем для предзаполнения слотов. */
+  private static readonly PREFILL_HISTORY_LIMIT = 10;
+  /** Разделитель счётчика попыток в state: "slot:master#2". */
+  private static readonly ATTEMPT_SEP = "#";
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly skills: SkillsRegistry,
@@ -54,33 +61,116 @@ export class ScriptRunnerService {
     if (!triggered) {
       return { handled: false };
     }
-    return this.activate(conversation, triggered.name, triggered.def);
+    return this.activate(conversation, triggered.name, triggered.def, userText);
   }
 
   private async activate(
     conversation: ScriptStepInput["conversation"],
     name: string,
     def: ScriptSpec,
+    triggerText: string,
   ): Promise<ScriptStepOutcome> {
     const firstSlot = def.order[0];
     if (!firstSlot || !def.slots[firstSlot]) {
       this.logger.warn(`Script "${name}" has empty order or missing first slot — ignoring trigger.`);
       return { handled: false };
     }
+
+    // Предзаполняем слоты тем, что клиент уже назвал (в триггер-сообщении и недавней
+    // истории) — чтобы не переспрашивать услугу/мастера, если они уже прозвучали.
+    const prefilled = await this.prefillSlots(conversation.id, name, def, triggerText);
+    const firstUnfilled = def.order.find((slot) => !(slot in prefilled));
+
+    if (!firstUnfilled) {
+      // Всё уже названо — сразу к подтверждению.
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          activeScript: name,
+          activeScriptState: SCRIPT_STATE_CONFIRM,
+          activeScriptSlots: prefilled as unknown as Prisma.InputJsonValue,
+        },
+      });
+      return {
+        handled: true,
+        reply: interpolateTemplate(def.confirm, prefilled),
+        terminal: false,
+        scriptName: name,
+      };
+    }
+
+    const firstSpec = def.slots[firstUnfilled];
+    if (!firstSpec) {
+      this.logger.warn(`Script "${name}" order references missing slot "${firstUnfilled}".`);
+      return { handled: false };
+    }
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         activeScript: name,
-        activeScriptState: SCRIPT_STATE_SLOT_PREFIX + firstSlot,
-        activeScriptSlots: {} as unknown as Prisma.InputJsonValue,
+        activeScriptState: this.slotState(firstUnfilled),
+        activeScriptSlots: prefilled as unknown as Prisma.InputJsonValue,
       },
     });
     return {
       handled: true,
-      reply: def.slots[firstSlot].ask,
+      reply: firstSpec.ask,
       terminal: false,
       scriptName: name,
     };
+  }
+
+  /**
+   * Извлекает значения слотов из триггер-сообщения и последних реплик клиента,
+   * используя per-slot `extract` regex. Извлечённое значение всё равно проходит
+   * `validate`, поэтому мусор не просочится. Самое свежее упоминание — в приоритете.
+   */
+  private async prefillSlots(
+    conversationId: string,
+    name: string,
+    def: ScriptSpec,
+    triggerText: string,
+  ): Promise<ScriptSlots> {
+    const hasExtractors = def.order.some((slot) => def.slots[slot]?.extract);
+    if (!hasExtractors) {
+      return {};
+    }
+    const history = await this.prisma.message.findMany({
+      where: { conversationId, role: "client" },
+      orderBy: { createdAt: "desc" },
+      take: ScriptRunnerService.PREFILL_HISTORY_LIMIT,
+    });
+    const candidates = [triggerText, ...history.map((m) => m.text)];
+
+    const prefilled: ScriptSlots = {};
+    for (const slotName of def.order) {
+      const spec = def.slots[slotName];
+      if (!spec?.extract) {
+        continue;
+      }
+      let re: RegExp;
+      try {
+        re = new RegExp(spec.extract, "iu");
+      } catch (e) {
+        this.logger.warn(
+          `Script "${name}" slot "${slotName}" invalid extract regex "${spec.extract}": ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
+      for (const text of candidates) {
+        const m = re.exec(text);
+        if (!m) {
+          continue;
+        }
+        const captured = (m[1] ?? m[0]).trim();
+        if (!captured || !this.slotValueValid(name, slotName, spec.validate, captured)) {
+          continue;
+        }
+        prefilled[slotName] = captured;
+        break;
+      }
+    }
+    return prefilled;
   }
 
   private async continueActive(
@@ -103,14 +193,14 @@ export class ScriptRunnerService {
     }
 
     if (state.startsWith(SCRIPT_STATE_SLOT_PREFIX)) {
-      const slotName = state.slice(SCRIPT_STATE_SLOT_PREFIX.length);
+      const { slotName, attempts } = this.parseSlotState(state);
       const spec = def.slots[slotName];
       if (!spec) {
         this.logger.warn(`Script "${name}" missing slot "${slotName}" — clearing state.`);
         await this.clearState(conversation.id);
         return { handled: false };
       }
-      return this.handleSlot(conversation, name, def, slots, slotName, spec, userText);
+      return this.handleSlot(conversation, name, def, slots, slotName, spec, userText, attempts);
     }
 
     // Неизвестное состояние — лечим сбросом.
@@ -127,38 +217,18 @@ export class ScriptRunnerService {
     slotName: string,
     spec: SlotSpec,
     userText: string,
+    attempts: number,
   ): Promise<ScriptStepOutcome> {
     const value = userText.trim();
-    if (!value) {
-      return {
-        handled: true,
-        reply: spec.ask,
-        terminal: false,
-        scriptName: name,
-      };
-    }
-    if (spec.validate) {
-      let re: RegExp | undefined;
-      try {
-        re = new RegExp(spec.validate, "iu");
-      } catch (e) {
-        this.logger.warn(
-          `Script "${name}" slot "${slotName}" invalid regex "${spec.validate}": ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-      if (re && !re.test(value)) {
-        return {
-          handled: true,
-          reply: spec.validateErrorReply ?? `Не понял — повторите, пожалуйста. ${spec.ask}`,
-          terminal: false,
-          scriptName: name,
-        };
-      }
+    if (!value || !this.slotValueValid(name, slotName, spec.validate, value)) {
+      return this.failSlot(conversation, name, def, slots, slotName, spec, attempts);
     }
 
     const updatedSlots = { ...slots, [slotName]: value };
     const idx = def.order.indexOf(slotName);
-    const nextSlotName = idx >= 0 && idx + 1 < def.order.length ? def.order[idx + 1] : undefined;
+    // Пропускаем уже заполненные (предзаполненные) слоты дальше по порядку.
+    const nextSlotName =
+      idx >= 0 ? def.order.slice(idx + 1).find((s) => !(s in updatedSlots)) : undefined;
 
     if (nextSlotName) {
       const nextSpec = def.slots[nextSlotName];
@@ -170,7 +240,7 @@ export class ScriptRunnerService {
       await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: {
-          activeScriptState: SCRIPT_STATE_SLOT_PREFIX + nextSlotName,
+          activeScriptState: this.slotState(nextSlotName),
           activeScriptSlots: updatedSlots as unknown as Prisma.InputJsonValue,
         },
       });
@@ -195,6 +265,89 @@ export class ScriptRunnerService {
       reply: interpolateTemplate(def.confirm, updatedSlots),
       terminal: false,
       scriptName: name,
+    };
+  }
+
+  /**
+   * Неуспешный ввод слота: считаем попытки. До лимита — повторяем подсказку;
+   * на лимите — эскалируем (onMaxAttempts) либо отдаём ход обратно LLM (handled:false).
+   */
+  private async failSlot(
+    conversation: ScriptStepInput["conversation"],
+    name: string,
+    def: ScriptSpec,
+    slots: ScriptSlots,
+    slotName: string,
+    spec: SlotSpec,
+    attempts: number,
+  ): Promise<ScriptStepOutcome> {
+    const nextAttempts = attempts + 1;
+    const maxAttempts = def.maxSlotAttempts ?? ScriptRunnerService.DEFAULT_MAX_SLOT_ATTEMPTS;
+
+    if (nextAttempts >= maxAttempts) {
+      await this.clearState(conversation.id);
+      if (def.onMaxAttempts) {
+        return {
+          handled: true,
+          reply: interpolateTemplate(def.onMaxAttempts, slots),
+          terminal: true,
+          scriptName: name,
+        };
+      }
+      // Нет спец-сообщения — отдаём ход дальше (snippet/LLM) с тем же userText.
+      return { handled: false };
+    }
+
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { activeScriptState: this.slotState(slotName, nextAttempts) },
+    });
+    return {
+      handled: true,
+      reply: spec.validateErrorReply ?? `Не понял — повторите, пожалуйста. ${spec.ask}`,
+      terminal: false,
+      scriptName: name,
+    };
+  }
+
+  private slotValueValid(
+    name: string,
+    slotName: string,
+    validate: string | undefined,
+    value: string,
+  ): boolean {
+    if (!validate) {
+      return true;
+    }
+    let re: RegExp;
+    try {
+      re = new RegExp(validate, "iu");
+    } catch (e) {
+      // Битый regex в конфиге — не блокируем клиента, пропускаем значение.
+      this.logger.warn(
+        `Script "${name}" slot "${slotName}" invalid regex "${validate}": ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return true;
+    }
+    return re.test(value);
+  }
+
+  private slotState(slotName: string, attempts = 0): string {
+    return attempts > 0
+      ? `${SCRIPT_STATE_SLOT_PREFIX}${slotName}${ScriptRunnerService.ATTEMPT_SEP}${attempts}`
+      : `${SCRIPT_STATE_SLOT_PREFIX}${slotName}`;
+  }
+
+  private parseSlotState(state: string): { slotName: string; attempts: number } {
+    const body = state.slice(SCRIPT_STATE_SLOT_PREFIX.length);
+    const sepIdx = body.indexOf(ScriptRunnerService.ATTEMPT_SEP);
+    if (sepIdx === -1) {
+      return { slotName: body, attempts: 0 };
+    }
+    const parsed = Number(body.slice(sepIdx + 1));
+    return {
+      slotName: body.slice(0, sepIdx),
+      attempts: Number.isFinite(parsed) ? parsed : 0,
     };
   }
 
