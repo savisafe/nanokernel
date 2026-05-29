@@ -1,23 +1,22 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { PromptProfileFileJson } from "../prompt-profile/prompt-profile.types";
-import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
-import {
-  BotConfigurationFileJson,
-  ResolvedBotConfiguration,
-} from "./bot-configuration.types";
+import { ResolvedBotConfiguration } from "./bot-configuration.types";
+import { adaptV2ToResolved } from "./v2/bot-config-v2.adapter";
+import { botConfigV2Schema } from "./v2/bot-config-v2.types";
+import { listBotConfigIds, resolveBotConfigFile } from "../shared/config-paths";
 
 @Injectable()
 export class BotConfigurationService implements OnModuleInit {
   private readonly logger = new Logger(BotConfigurationService.name);
   private readonly resolved: ResolvedBotConfiguration;
   private readonly resolveCache = new Map<string, ResolvedBotConfiguration>();
+  private readonly bySecret = new Map<string, ResolvedBotConfiguration>();
 
   constructor() {
     const id = this.normalizeConfigurationId(process.env.BOT_CONFIGURATION?.trim() || "default");
     this.resolved = this.load(id);
     this.resolveCache.set(id, this.resolved);
+    this.discoverAll();
   }
 
   private normalizeConfigurationId(raw: string): string {
@@ -29,8 +28,11 @@ export class BotConfigurationService implements OnModuleInit {
   }
 
   onModuleInit(): void {
+    this.logger.log(`Default bot configuration: "${this.resolved.id}"`);
+    const ids = [...this.resolveCache.keys()];
+    const withSecrets = [...this.bySecret.values()].map((b) => b.id);
     this.logger.log(
-      `Bot configuration "${this.resolved.id}" → promptProfile="${this.resolved.llmPromptProfile}", useRag=${this.resolved.useRag}`,
+      `Discovered configurations: ${ids.length} (${ids.join(", ")}). With Telegram webhook secret: ${withSecrets.length} (${withSecrets.join(", ") || "none"}).`,
     );
   }
 
@@ -46,64 +48,86 @@ export class BotConfigurationService implements OnModuleInit {
     }
     const loaded = this.load(id);
     this.resolveCache.set(id, loaded);
+    this.indexSecret(loaded);
     return loaded;
   }
 
-  private load(configurationId: string): ResolvedBotConfiguration {
-    const filePath = path.resolve(
-      process.cwd(),
-      "config",
-      "configurations",
-      `${configurationId}.json`,
-    );
+  /** Резолв бота по секрету из URL вебхука. Возвращает undefined если секрет неизвестен. */
+  resolveByWebhookSecret(secret: string): ResolvedBotConfiguration | undefined {
+    return this.bySecret.get(secret);
+  }
 
-    let raw: BotConfigurationFileJson = {};
+  /** Все известные сборки (для админ-эндпоинтов, метрик и т.п.). */
+  listAll(): ResolvedBotConfiguration[] {
+    return [...this.resolveCache.values()];
+  }
+
+  private discoverAll(): void {
+    const ids = listBotConfigIds();
+    if (ids.length === 0) {
+      this.logger.warn("No bot configurations discovered. Multi-bot routing disabled.");
+      return;
+    }
+    for (const id of ids) {
+      if (this.resolveCache.has(id)) {
+        this.indexSecret(this.resolveCache.get(id)!);
+        continue;
+      }
+      try {
+        const bot = this.load(id);
+        this.resolveCache.set(id, bot);
+        this.indexSecret(bot);
+      } catch (e) {
+        this.logger.warn(
+          `Configuration "${id}" failed to load during discovery: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
+  private indexSecret(bot: ResolvedBotConfiguration): void {
+    const secret = bot.channel?.telegram?.webhookSecret;
+    if (!secret) return;
+    const existing = this.bySecret.get(secret);
+    if (existing && existing.id !== bot.id) {
+      this.logger.warn(
+        `Webhook secret collision: "${existing.id}" and "${bot.id}" share the same secret — keeping "${existing.id}".`,
+      );
+      return;
+    }
+    this.bySecret.set(secret, bot);
+  }
+
+  /**
+   * Загружает сборку. Поддерживает только BotConfig v2 (schemaVersion: 2).
+   * Legacy формат (v1 promptProfile/dialog без schemaVersion) больше не парсится.
+   */
+  private load(configurationId: string): ResolvedBotConfiguration {
+    const filePath = resolveBotConfigFile(configurationId);
+
+    let raw: { schemaVersion?: number };
     try {
       const content = readFileSync(filePath, "utf8");
-      raw = JSON.parse(content) as BotConfigurationFileJson;
+      raw = JSON.parse(content) as { schemaVersion?: number };
     } catch (e) {
-      this.logger.warn(
-        `Configuration file missing or invalid (${filePath}), using env/default paths: ${e instanceof Error ? e.message : String(e)}`,
+      throw new Error(
+        `Configuration "${configurationId}" not found or invalid (${filePath}): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
 
-    const llmPromptProfile =
-      (typeof raw.llmPromptProfile === "string" && raw.llmPromptProfile.trim().length > 0
-        ? raw.llmPromptProfile.trim()
-        : undefined) ??
-      process.env.LLM_PROMPT_PROFILE?.trim() ??
-      "default";
-
-    const rawUseRag = raw.useRag;
-    const useRag =
-      rawUseRag === true ||
-      (typeof rawUseRag === "string" && rawUseRag.trim().toLowerCase() === "true");
-
-    const promptProfile = this.extractEmbeddedPromptProfile(raw.promptProfile);
-    const dialog = this.extractDialog(raw.dialog);
-
-    return {
-      id: configurationId,
-      llmPromptProfile,
-      useRag,
-      ...(promptProfile ? { promptProfile } : {}),
-      ...(dialog ? { dialog } : {}),
-    };
-  }
-
-  private extractDialog(value: BotConfigurationFileJson["dialog"]): DialogConfigFileJson | undefined {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return undefined;
+    if (raw.schemaVersion !== 2) {
+      throw new Error(
+        `Configuration "${configurationId}" must have schemaVersion: 2 (BotConfig v2). Legacy format is no longer supported.`,
+      );
     }
-    return value as DialogConfigFileJson;
-  }
-
-  private extractEmbeddedPromptProfile(
-    value: BotConfigurationFileJson["promptProfile"],
-  ): PromptProfileFileJson | undefined {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return undefined;
+    const parsed = botConfigV2Schema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        `BotConfig v2 invalid (${filePath}):\n${parsed.error.issues
+          .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("\n")}`,
+      );
     }
-    return value as PromptProfileFileJson;
+    return adaptV2ToResolved(configurationId, parsed.data);
   }
 }

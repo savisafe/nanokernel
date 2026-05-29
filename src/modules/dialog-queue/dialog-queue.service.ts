@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
 import { Queue } from "bullmq";
 import { isDevelopment } from "../shared/is-development";
-import { buildDialogInboundJobId, DialogInboundJob } from "./dialog-inbound-job.types";
+import { DialogInboundJob } from "./dialog-inbound-job.types";
 import { DIALOG_INBOUND_QUEUE_NAME, isDialogQueueEnabled } from "./dialog-queue.constants";
 import { createRedisConnectionForBullmq } from "./redis-connection";
 
@@ -42,11 +42,13 @@ export class DialogQueueService implements OnApplicationShutdown {
   }
 
   async enqueue(job: DialogInboundJob): Promise<void> {
-    const jobId = buildDialogInboundJobId(job);
+    // jobId не задаём: Telegram messageId уникален только в рамках чата и переиспользуется
+    // между сессиями/перезапусками — детерминированный jobId ловит коллизии со старыми
+    // completed-job'ами в Redis и тихо no-op'ит add(). Дедуп вебхуков делается в PG
+    // через ProcessedInboundMessage (IdempotencyService).
     await this.ensureQueue().add("run", job, {
-      jobId,
-      removeOnComplete: { count: 1000 },
-      removeOnFail: { count: 5000 },
+      removeOnComplete: { age: 3600, count: 200 },
+      removeOnFail: { age: 86400, count: 1000 },
       attempts: Number(process.env.DIALOG_QUEUE_ATTEMPTS ?? 5),
       backoff: {
         type: "exponential",
@@ -54,7 +56,7 @@ export class DialogQueueService implements OnApplicationShutdown {
       },
     });
     if (isDevelopment()) {
-      this.logger.log(`Enqueued ${job.channel} job jobId=${jobId ?? "auto"}`);
+      this.logger.log(`Enqueued ${job.channel} job`);
     }
   }
 

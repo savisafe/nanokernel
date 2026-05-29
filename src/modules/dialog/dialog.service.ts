@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma, User } from "@prisma/client";
 import { LlmChatMessage, LlmService } from "../llm/llm.service";
@@ -8,7 +8,13 @@ import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration
 import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { RagService } from "../rag/rag.service";
 import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
-import { DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES } from "../prompt-profile/strict-knowledge-conversational.defaults";
+import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
+import { BotUsageService } from "../bot-usage/bot-usage.service";
+import { SkillsRegistry } from "../skills/skills-registry.service";
+import { ScriptRunnerService } from "../scripts/script-runner.service";
+import { SafetyInService } from "../safety/safety-in.service";
+import { SafetyOutService } from "../safety/safety-out.service";
+import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
 import { interpolateTemplate } from "./dialog-template.utils";
@@ -24,6 +30,7 @@ import {
 
 @Injectable()
 export class DialogService {
+  private readonly logger = new Logger(DialogService.name);
 
   private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
       //TODO ru hardcode, move
@@ -45,55 +52,36 @@ export class DialogService {
     private readonly promptProfile: PromptProfileService,
     private readonly botConfiguration: BotConfigurationService,
     private readonly ragService: RagService,
+    private readonly snippetMatcher: SnippetMatcherService,
+    private readonly botUsage: BotUsageService,
+    private readonly skills: SkillsRegistry,
+    private readonly scriptRunner: ScriptRunnerService,
+    private readonly safetyIn: SafetyInService,
+    private readonly safetyOut: SafetyOutService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
 
-  getTelegramKnowledgeOnboarding() {
-    return this.effective.telegramKnowledgeOnboarding;
-  }
-
-  isGlobalKnowledgeIntent(text: string): boolean {
-    return this.isGlobalKnowledgeRequest(text);
-  }
-
   composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
-    const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profile, bot);
     const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
     return {
       profile,
       bot,
-      llmSystemPromptPrefix: prefix,
-      llmSystemPromptSuffix: suffix,
+      // template-режим v2: prefix/suffix не используются (весь промпт в systemPromptTemplate),
+      // поля оставлены в snapshot для backward compatibility типа.
+      llmSystemPromptPrefix: "",
+      llmSystemPromptSuffix: "",
       knowledgeChunks,
     };
   }
 
-  private resolveRuntimeSnapshotForUser(channel: ChannelType, user: User): DialogRuntimeSnapshot {
-    const globalBot = this.botConfiguration.get();
-    const bot =
-      user.selectedBotConfigurationId?.trim().length
-        ? this.botConfiguration.resolveById(user.selectedBotConfigurationId.trim())
-        : globalBot;
+  private resolveRuntimeSnapshotForUser(_channel: ChannelType, _user: User): DialogRuntimeSnapshot {
+    // В multi-bot модели (Phase 7+) бот определяется URL-секретом вебхука, не per-user.
+    // selectedBotConfigurationId удалён в Phase 9b — пользовательский выбор больше не
+    // переопределяет глобальную сборку процесса/контекста.
+    const bot = this.botConfiguration.get();
     const profile = this.promptProfile.resolveProfileForBot(bot);
-    const base = this.composeSnapshot(profile, bot);
-    const scope = user.knowledgeScopeText?.trim();
-    if (channel === "telegram" && scope && scope.length > 0) {
-      const profileScoped: ResolvedLlmPromptProfile = {
-        ...base.profile,
-        scopeText: scope,
-      };
-      const { prefix, suffix } = this.buildLlmSystemPromptStaticParts(profileScoped, base.bot);
-      return {
-        profile: profileScoped,
-        bot: base.bot,
-        llmSystemPromptPrefix: prefix,
-        llmSystemPromptSuffix: suffix,
-        knowledgeChunks: this.getCachedKnowledgeChunksForScope(scope, profileScoped, base.bot),
-        disableRag: true,
-      };
-    }
-    return base;
+    return this.composeSnapshot(profile, bot);
   }
 
   /**
@@ -142,41 +130,32 @@ export class DialogService {
     return { replyText, stage: nextStage, diagnostics };
   }
 
-  async process(input: DialogInput): Promise<DialogOutput> {
+  async process(
+    input: DialogInput,
+    progress?: { onLlmTextDelta?: (text: string) => void | Promise<void> },
+  ): Promise<DialogOutput> {
     const { conversation, user } = await this.getOrCreateConversation(
       input.channel,
       input.externalUserId,
     );
     const snap = this.resolveRuntimeSnapshotForUser(input.channel, user);
 
-    if (
-      input.channel === "telegram" &&
-      snap.profile.strictKnowledgeMode &&
-      !user.knowledgeScopeText?.trim()
-    ) {
-      const onboarding = this.effectiveFor(snap.bot).telegramKnowledgeOnboarding;
-      const replyText = user.telegramKnowledgeAwaiting
-        ? onboarding.strictNoScopeAwaitingDraft
-        : onboarding.strictNoScopeNeedNew;
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          role: "client",
-          text: input.text,
-        },
-      });
-      await this.prisma.conversation.update({
-        where: { id: conversation.id },
-        data: { stage: conversation.stage, status: "ACTIVE" },
-      });
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          role: "assistant",
-          text: replyText,
-        },
-      });
-      return { replyText, stage: conversation.stage };
+    // Rate-limit раньше всего: защита от спама ДО записи сообщения в БД.
+    const rl = await this.safetyIn.checkRateLimit(input.channel, input.externalUserId, snap.bot);
+    if (rl.blocked && rl.reply) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "rate_limit");
+      return { replyText: rl.reply, stage: conversation.stage };
+    }
+
+    // Burst-детектор: плотность отправки (N сообщений за мс). Срабатывает раньше,
+    // чем суммарный rateLimit, чтобы поймать всплески внутри окна.
+    const burst = await this.safetyIn.checkBurst(input.channel, input.externalUserId, snap.bot);
+    if (burst.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "burst");
+      return {
+        replyText: burst.silent ? "" : burst.reply ?? "",
+        stage: conversation.stage,
+      };
     }
 
     await this.prisma.message.create({
@@ -187,16 +166,103 @@ export class DialogService {
       },
     });
 
+    // Repeat-чек: ловит копипасту и циклический спам по нормализованному хешу.
+    // Идёт после сохранения в БД, чтобы повтор всё равно был виден в истории диалога.
+    const repeat = await this.safetyIn.checkRepeat(
+      input.channel,
+      input.externalUserId,
+      input.text,
+      snap.bot,
+    );
+    if (repeat.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "repeat");
+      const replyText = repeat.silent ? "" : repeat.reply ?? "";
+      if (replyText) {
+        await this.prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            role: "assistant",
+            text: replyText,
+          },
+        });
+      }
+      return { replyText, stage: conversation.stage };
+    }
+
+    // Content safety: injection + safety-topics. Запускается ДО FSM/snippet/LLM,
+    // чтобы перехватить попытки jailbreak / запрос мед/юр-консультации в любом состоянии.
+    const contentSafety = this.safetyIn.checkContent(input.text, snap.bot);
+    if (contentSafety.blocked && contentSafety.reply) {
+      await this.botUsage.recordSafetyBlock(
+        snap.bot.id,
+        conversation.id,
+        contentSafety.category ?? "injection",
+      );
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: contentSafety.reply,
+        },
+      });
+      return { replyText: contentSafety.reply, stage: conversation.stage };
+    }
+
+    const fsmOutcome = await this.scriptRunner.step({
+      conversation,
+      bot: snap.bot,
+      userText: input.text,
+    });
+    if (fsmOutcome.handled) {
+      if (isDevelopment()) {
+        this.logger.debug(
+          `fsm bot=${snap.bot.id} script=${fsmOutcome.scriptName} terminal=${fsmOutcome.terminal}`,
+        );
+      }
+      await this.botUsage.recordFsm(snap.bot.id, conversation.id, fsmOutcome.scriptName);
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: fsmOutcome.reply,
+        },
+      });
+      return { replyText: fsmOutcome.reply, stage: conversation.stage };
+    }
+
+    const snippetHit = this.snippetMatcher.match(input.text, snap.bot);
+    if (snippetHit) {
+      if (isDevelopment()) {
+        this.logger.debug(`snippet hit bot=${snap.bot.id} id=${snippetHit.id} (no LLM call)`);
+      }
+      await this.botUsage.recordSnippet(snap.bot.id, conversation.id, snippetHit.id);
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { stage: conversation.stage, status: "ACTIVE" },
+      });
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: snippetHit.reply,
+        },
+      });
+      return { replyText: snippetHit.reply, stage: conversation.stage };
+    }
+
     const nextStage = conversation.stage;
     const templateReply = this.buildReply(nextStage, input.text, snap);
-    const replyText = await this.tryLlmReply(
+    const rawReply = await this.tryLlmReply(
       conversation.id,
       nextStage,
       input.channel,
       templateReply,
       input.text,
       snap,
+      progress?.onLlmTextDelta,
     );
+    const safeOut = this.safetyOut.apply(rawReply, snap.bot);
+    const replyText = safeOut.text;
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
@@ -291,35 +357,6 @@ export class DialogService {
     return selected.replyLines.map((line) => line.replace("{clientText}", clientText)).join("\n");
   }
 
-  /**
-   * Приветствия и мета-вопросы не требуют фрагментов БЗ — паттерны задаются в профиле
-   * (`strictKnowledgeConversationalBypass`), иначе strictKnowledgeMode даёт сухой noKnowledgeReply.
-   */
-  private isConversationalBypassStrictKnowledge(userText: string, profile: ResolvedLlmPromptProfile): boolean {
-    const cfg = profile.strictKnowledgeConversationalBypass;
-    if (!cfg || cfg.patterns.length === 0) {
-      return false;
-    }
-    const t = userText.trim().toLowerCase();
-    const maxLen = cfg.maxMessageLength;
-    if (t.length === 0 || t.length > maxLen) {
-      return false;
-    }
-    return cfg.patterns.some((re) => re.test(t));
-  }
-
-  private strictKnowledgeConversationalSystemAddendum(profile: ResolvedLlmPromptProfile): string {
-    const lines = profile.strictKnowledgeConversationalPromptAddendumLines;
-    const resolved =
-      lines === undefined
-        ? DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_PROMPT_ADDENDUM_LINES
-        : lines;
-    if (resolved.length === 0) {
-      return "";
-    }
-    return resolved.join("\n");
-  }
-
   private async tryLlmReply(
     conversationId: string,
     stage: string,
@@ -327,8 +364,17 @@ export class DialogService {
     templateFallback: string,
     userText: string,
     snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
   ): Promise<string> {
-    const r = await this.tryLlmReplyCore(conversationId, stage, channel, templateFallback, userText, snap);
+    const r = await this.tryLlmReplyCore(
+      conversationId,
+      stage,
+      channel,
+      templateFallback,
+      userText,
+      snap,
+      onTextDelta,
+    );
     return r.replyText;
   }
 
@@ -350,14 +396,19 @@ export class DialogService {
     templateFallback: string,
     userText: string,
     snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
   ): Promise<{
     replyText: string;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
-    const dialogCfg = this.effectiveFor(snap.bot);
+    // Per-bot override победит дефолтный templateFallback. Это даёт каждому боту
+    // возможность держать персону даже в моменты, когда LLM падает/таймаутится.
+    const llmFallback = snap.bot.guardrails?.llmFallbackReply ?? templateFallback;
+
     if (!this.llmService.isEnabled()) {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
-        replyText: templateFallback,
+        replyText: llmFallback,
         diagnostics: await this.buildDiagnosticsForDisabledLlm(snap, stage, channel),
       };
     }
@@ -370,35 +421,10 @@ export class DialogService {
     });
     rows.reverse();
 
-    const profile = snap.profile;
-    const conversationalBypass =
-      Boolean(profile.strictKnowledgeMode && profile.scopeText) &&
-      this.isConversationalBypassStrictKnowledge(userText, profile);
-    const retrieval = conversationalBypass
-      ? { context: undefined as string | undefined, mode: "none" as const, chunks: [] as DialogDiagnosticChunk[] }
-      : await this.retrieveKnowledgeContextDetailed(userText, snap);
-
+    const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
     const knowledgeContext = retrieval.context;
 
-    if (profile.strictKnowledgeMode && profile.scopeText && !knowledgeContext && !conversationalBypass) {
-      const replyText = profile.noKnowledgeReply ?? dialogCfg.fallbackNoKnowledgeReply;
-      const system =
-        this.buildSystemPrompt(stage, channel, undefined, snap) +
-        (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
-      return {
-        replyText,
-        diagnostics: {
-          systemPrompt: system,
-          knowledgeContext,
-          chunks: retrieval.chunks,
-          retrievalMode: retrieval.mode,
-        },
-      };
-    }
-
-    const system =
-      this.buildSystemPrompt(stage, channel, knowledgeContext, snap) +
-      (conversationalBypass ? this.strictKnowledgeConversationalSystemAddendum(profile) : "");
+    const system = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
     const messages: LlmChatMessage[] = [
       { role: "system", content: system },
       ...rows.map((m) => ({
@@ -407,8 +433,51 @@ export class DialogService {
       })),
     ];
 
-    const out = await this.llmService.complete(messages);
-    const replyText = out ?? templateFallback;
+    const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
+    const llmOptions = {
+      ...(snap.bot.llm ?? {}),
+      ...(onTextDelta ? { onTextDelta } : {}),
+    };
+    const out = enabledSkills.length > 0
+      ? await this.llmService.completeWithTools(
+          messages,
+          llmOptions,
+          enabledSkills.map((s) => this.skills.toToolSpec(s)),
+          async (name, args) => {
+            const skill = this.skills.get(name);
+            if (!skill) {
+              return { error: `unknown skill "${name}"` };
+            }
+            const result = await skill.execute(args, {
+              botId: snap.bot.id,
+              conversationId,
+              channel,
+            });
+            if (isDevelopment()) {
+              this.logger.debug(`skill exec bot=${snap.bot.id} name=${name} args=${JSON.stringify(args)}`);
+            }
+            return result.data;
+          },
+        )
+      : await this.llmService.complete(messages, llmOptions);
+    if (out) {
+      await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
+      if (isDevelopment()) {
+        const p = out.usage?.promptTokens ?? "?";
+        const c = out.usage?.completionTokens ?? "?";
+        this.logger.debug(
+          `llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"} skills=${enabledSkills.length}`,
+        );
+      }
+    } else {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
+      this.logger.warn(
+        `LLM returned null (bot=${snap.bot.id}, conv=${conversationId}) — falling back to ${
+          snap.bot.guardrails?.llmFallbackReply ? "per-bot llmFallbackReply" : "template default"
+        }`,
+      );
+    }
+    const replyText = out?.text ?? llmFallback;
     return {
       replyText,
       diagnostics: {
@@ -480,144 +549,17 @@ export class DialogService {
   ): string {
     const eff = this.effectiveFor(snap.bot);
     const knowledgeBlockRaw = knowledgeContext ?? "";
-
-    if (eff.systemKind === "template") {
-      const stageLine = snap.profile.openTopicsMode
-        ? eff.stageFrame.openTopicsStageLine
-        : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
-      return interpolateTemplate(eff.systemPromptTemplate, {
-        knowledgeBlock: knowledgeBlockRaw,
-        channel,
-        stage,
-        stageLine,
-        prefix: snap.llmSystemPromptPrefix,
-        suffix: snap.llmSystemPromptSuffix,
-      });
-    }
-
-    const frame = eff.systemPromptFrame;
-    const open = snap.profile.openTopicsMode;
-    const stageLine = open
-      ? frame.openTopicsStageLine
-      : interpolateTemplate(frame.funnelStageLineTemplate, { stage });
-    const knowledgeBlock = knowledgeContext ? `${frame.knowledgeBlockIntro}${knowledgeContext}` : "";
-    return interpolateTemplate(frame.assembledTemplate, {
-      prefix: snap.llmSystemPromptPrefix,
+    const stageLine = snap.profile.openTopicsMode
+      ? eff.stageFrame.openTopicsStageLine
+      : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
+    return interpolateTemplate(eff.systemPromptTemplate, {
+      knowledgeBlock: knowledgeBlockRaw,
       channel,
+      stage,
       stageLine,
+      prefix: snap.llmSystemPromptPrefix,
       suffix: snap.llmSystemPromptSuffix,
-      knowledgeBlock,
     });
-  }
-
-  private buildLlmSystemPromptStaticParts(
-    p: ResolvedLlmPromptProfile,
-    bot: ResolvedBotConfiguration,
-  ): { prefix: string; suffix: string } {
-    const eff = this.effectiveFor(bot);
-    if (eff.systemKind === "template") {
-      return { prefix: "", suffix: "" };
-    }
-    const suf = eff.staticPromptSuffix;
-    const company = p.companyName;
-    const topic = p.topic;
-    const forbidden = p.forbiddenTopics;
-    const scopeFromFile = p.scopeText;
-    const neverDo = p.neverDo ?? [];
-    const primaryGoals = p.primaryGoals ?? [];
-    const lang = p.language ?? suf.defaultLanguage;
-
-    const prefixLines: string[] = [];
-    if (p.persona) {
-      prefixLines.push(p.persona);
-    } else {
-      prefixLines.push(interpolateTemplate(suf.defaultPersonaTemplate, { company }));
-    }
-    const prefix = `${prefixLines.join("\n")}\n`;
-
-    const lines: string[] = [];
-    lines.push(interpolateTemplate(suf.mainLanguageLineTemplate, { lang }), "");
-
-    if (primaryGoals.length > 0) {
-      lines.push(
-        suf.primaryGoalsHeader,
-        ...primaryGoals.map((g) => `${suf.goalItemPrefix}${g}`),
-        "",
-      );
-    } else if (p.openTopicsMode) {
-      lines.push(suf.openTopicsPrimaryGoal, "");
-    } else {
-      lines.push(suf.funnelPrimaryGoal, "");
-    }
-
-    if (p.servicesHighlight) {
-      lines.push(suf.servicesHighlightHeader, p.servicesHighlight, "");
-    }
-
-    if (topic) {
-      lines.push(suf.topicHeader, topic, "", suf.topicOutOfScopeGuidance);
-    }
-
-    if (forbidden.length > 0) {
-      lines.push(
-        "",
-        suf.forbiddenSectionHeader,
-        ...forbidden.map((f) => `${suf.forbiddenItemPrefix}${f}`),
-      );
-    }
-
-    if (neverDo.length > 0) {
-      lines.push("", suf.neverDoSectionHeader, ...neverDo.map((f) => `${suf.neverDoItemPrefix}${f}`));
-    }
-
-    if (scopeFromFile) {
-      lines.push("", suf.scopeConnectedIntro);
-      if (p.strictKnowledgeMode) {
-        lines.push(...suf.strictKnowledgeBullets.map((b) => `- ${b}`));
-      }
-    }
-
-    if (p.bookingAndContact) {
-      lines.push("", suf.bookingSectionHeader, p.bookingAndContact);
-    }
-
-    if (p.humanLikeMode) {
-      lines.push(
-        "",
-        suf.humanLikeSectionHeader,
-        ...suf.humanLikeBullets.map((b) => `- ${b}`),
-      );
-    }
-
-    const styleLead = p.humanLikeMode ? suf.styleLeadHumanLike : suf.styleLeadDefault;
-
-    if (p.openTopicsMode) {
-      const ots = suf.openTopicsStyle;
-      lines.push(
-        "",
-        ots.sectionTitle,
-        styleLead,
-        ...ots.sharedBullets.map((b) => `- ${b}`),
-        `- ${p.humanLikeMode ? ots.lastBulletHumanLike : ots.lastBulletDefault}`,
-      );
-    } else {
-      const fs = suf.funnelStyle;
-      lines.push(
-        "",
-        fs.sectionTitle,
-        styleLead,
-        ...fs.sharedBullets.map((b) => `- ${b}`),
-        `- ${p.humanLikeMode ? fs.lastBulletHumanLike : fs.lastBulletDefault}`,
-      );
-    }
-
-    if (p.additionalStyleRules?.length) {
-      for (const rule of p.additionalStyleRules) {
-        lines.push(`${suf.additionalStyleRulePrefix}${rule}`);
-      }
-    }
-
-    return { prefix, suffix: lines.join("\n") };
   }
 
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */

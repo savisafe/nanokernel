@@ -1,12 +1,16 @@
-import { Controller, Get, HttpException, HttpStatus, Logger } from "@nestjs/common";
+import { Controller, Get, HttpException, HttpStatus, Logger, Query } from "@nestjs/common";
 import { isDialogQueueEnabled, isDialogQueueWorkerEnabled } from "../dialog-queue/dialog-queue.constants";
 import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
+import { BotUsageService } from "../bot-usage/bot-usage.service";
 
 @Controller("health")
 export class HealthController {
   private readonly logger = new Logger(HealthController.name);
 
-  constructor(private readonly dialogQueue: DialogQueueService) {}
+  constructor(
+    private readonly dialogQueue: DialogQueueService,
+    private readonly botUsage: BotUsageService,
+  ) {}
 
   @Get()
   getHealth() {
@@ -56,5 +60,45 @@ export class HealthController {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+  }
+
+  @Get("usage")
+  async getUsage(
+    @Query("bot") botId?: string,
+    @Query("hours") hoursRaw?: string,
+  ) {
+    const sinceHours = this.parseHours(hoursRaw);
+    try {
+      const summary = await this.botUsage.summarize({ botId, sinceHours });
+      return {
+        timestamp: new Date().toISOString(),
+        botId: botId ?? "(all)",
+        sinceHours,
+        ...summary,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Usage summary failed: ${msg}`);
+      throw new HttpException(
+        {
+          status: "error",
+          message: "Cannot read usage summary (database unreachable?)",
+          detail: msg,
+          timestamp: new Date().toISOString(),
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+  }
+
+  private parseHours(raw?: string): number {
+    if (raw === undefined || raw === "") {
+      return 24;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      return 24;
+    }
+    return Math.min(720, Math.floor(n));
   }
 }

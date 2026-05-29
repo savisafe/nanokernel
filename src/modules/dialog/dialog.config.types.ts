@@ -41,91 +41,11 @@ export interface DialogTokenization {
   stopWords: string[];
 }
 
-export interface DialogTelegramKnowledgeOnboarding {
-  welcomeStart: string;
-  newDocHint: string;
-  draftSavedAck: string;
-  draftAckDebounceMs: number;
-  emptyDone: string;
-  saved: string;
-  awaitingSlash: string;
-  strictNoScopeAwaitingDraft: string;
-  strictNoScopeNeedNew: string;
-  documentOutsideKnowledgeMode: string;
-  documentUnsupportedFormat: string;
-  documentTooLarge: string;
-  documentDownloadFailed: string;
-  documentExtractFailed: string;
-  documentExtractEmpty: string;
-  documentAcceptedAck: string;
-  attachmentNotDocumentHint: string;
-  questionBeforeDoneHint: string;
-  documentExtractShortWarning: string;
-  linkNotSupportedInDraft: string;
-  modeChoiceCaption: string;
-  modeButtonKnowledgeConsultant: string;
-  modeButtonOpenTopics: string;
-  modeAppliedKnowledgeConsultant: string;
-  modeAppliedOpenTopics: string;
-}
-
-export interface DialogSystemPromptFrame {
-  openTopicsStageLine: string;
-  funnelStageLineTemplate: string;
-  knowledgeBlockIntro: string;
-  assembledTemplate: string;
-}
-
-export interface DialogStyleVariant {
-  sectionTitle: string;
-  sharedBullets: string[];
-  lastBulletHumanLike: string;
-  lastBulletDefault: string;
-}
-
-export interface DialogStaticPromptSuffix {
-  defaultLanguage: string;
-  defaultPersonaTemplate: string;
-  mainLanguageLineTemplate: string;
-  primaryGoalsHeader: string;
-  goalItemPrefix: string;
-  openTopicsPrimaryGoal: string;
-  funnelPrimaryGoal: string;
-  servicesHighlightHeader: string;
-  topicHeader: string;
-  topicOutOfScopeGuidance: string;
-  forbiddenSectionHeader: string;
-  forbiddenItemPrefix: string;
-  neverDoSectionHeader: string;
-  neverDoItemPrefix: string;
-  scopeConnectedIntro: string;
-  strictKnowledgeBullets: string[];
-  bookingSectionHeader: string;
-  humanLikeSectionHeader: string;
-  humanLikeBullets: string[];
-  styleLeadHumanLike: string;
-  styleLeadDefault: string;
-  openTopicsStyle: DialogStyleVariant;
-  funnelStyle: DialogStyleVariant;
-  additionalStyleRulePrefix: string;
-}
-
-export interface DialogServiceConfig {
-  diagnosticsDefaults: DialogDiagnosticsDefaults;
-  templateStages: Record<string, DialogStageTemplates>;
-  fallbackNoKnowledgeReply: string;
-  llmContextMessages: DialogLlmContextMessages;
-  chunkDefaults: DialogChunkDefaults;
-  chunkBoundaries: DialogChunkBoundaries;
-  retrievalPresentation: DialogRetrievalPresentation;
-  tokenization: DialogTokenization;
-  telegramKnowledgeOnboarding: DialogTelegramKnowledgeOnboarding;
-  systemPromptFrame: DialogSystemPromptFrame;
-  staticPromptSuffix: DialogStaticPromptSuffix;
-}
-
-/** Короткий `dialog`: один шаблон system prompt + опции; остальное подставляется из кода (defaults). */
-export interface DialogConfigMinimalFile {
+/**
+ * Минимальная конфигурация диалога: template для system prompt + опции retrieval/чанкинга/UX.
+ * Адаптер BotConfig v2 строит template из persona/goals/guardrails автоматически.
+ */
+export interface DialogConfigFileJson {
   contextMessages?: number;
   systemPrompt: { template: string };
   templateStages?: Record<string, DialogStageTemplates>;
@@ -134,22 +54,25 @@ export interface DialogConfigMinimalFile {
   chunkBoundaries?: Partial<DialogChunkBoundaries>;
   retrievalPresentation?: Partial<DialogRetrievalPresentation>;
   tokenization?: Partial<DialogTokenization>;
-  telegramKnowledgeOnboarding?: Partial<DialogTelegramKnowledgeOnboarding>;
 }
 
-export type DialogConfigFileJson = DialogServiceConfig | DialogConfigMinimalFile;
-
 /** Общие поля для lexical/RAG и лимитов (после resolve). */
-export type DialogSubsystemResolved = Omit<DialogServiceConfig, "systemPromptFrame" | "staticPromptSuffix">;
+export interface DialogSubsystemResolved {
+  diagnosticsDefaults: DialogDiagnosticsDefaults;
+  templateStages: Record<string, DialogStageTemplates>;
+  fallbackNoKnowledgeReply: string;
+  llmContextMessages: DialogLlmContextMessages;
+  chunkDefaults: DialogChunkDefaults;
+  chunkBoundaries: DialogChunkBoundaries;
+  retrievalPresentation: DialogRetrievalPresentation;
+  tokenization: DialogTokenization;
+}
 
-export type EffectiveDialogRuntime =
-  | ({
-      systemKind: "legacy";
-      systemPromptFrame: DialogSystemPromptFrame;
-      staticPromptSuffix: DialogStaticPromptSuffix;
-    } & DialogSubsystemResolved)
-  | ({
-      systemKind: "template";
-      systemPromptTemplate: string;
-      stageFrame: Pick<DialogSystemPromptFrame, "openTopicsStageLine" | "funnelStageLineTemplate">;
-    } & DialogSubsystemResolved);
+export interface EffectiveDialogRuntime extends DialogSubsystemResolved {
+  systemPromptTemplate: string;
+  /** Шаблон для строки этапа в system prompt (legacy-совместимость для template builder). */
+  stageFrame: {
+    openTopicsStageLine: string;
+    funnelStageLineTemplate: string;
+  };
+}

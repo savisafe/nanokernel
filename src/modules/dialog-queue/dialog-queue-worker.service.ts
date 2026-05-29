@@ -9,6 +9,7 @@ import {
 import { Job, Worker } from "bullmq";
 import { TelegramService } from "../telegram/telegram.service";
 import { WhatsAppService } from "../whatsapp/whatsapp.service";
+import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
 import { isDevelopment } from "../shared/is-development";
 import { DialogInboundJob } from "./dialog-inbound-job.types";
 import {
@@ -29,6 +30,7 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
     private readonly telegramService: TelegramService,
     @Inject(forwardRef(() => WhatsAppService))
     private readonly whatsAppService: WhatsAppService,
+    private readonly botConfigurationService: BotConfigurationService,
   ) {}
 
   onModuleInit() {
@@ -49,7 +51,8 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
       async (job: Job<DialogInboundJob>) => {
         const data = job.data;
         if (data.channel === "telegram") {
-          await this.telegramService.processInboundQueued(data);
+          const bot = this.botConfigurationService.resolveById(data.botId);
+          await this.telegramService.processInboundQueued(data, bot);
         } else {
           await this.whatsAppService.processInboundQueued(data);
         }

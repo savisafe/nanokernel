@@ -1,0 +1,92 @@
+[
+  {
+    "id": "tr-st-100x100x4",
+    "name": "Труба профильная 100×100×4",
+    "type": "профильная",
+    "material": "сталь",
+    "size": "100×100",
+    "wallThickness": 4,
+    "lengthM": 6,
+    "price": 5400
+  },
+  {
+    "id": "tr-st-80x80x3",
+    "name": "Труба профильная 80×80×3",
+    "type": "профильная",
+    "material": "сталь",
+    "size": "80×80",
+    "wallThickness": 3,
+    "lengthM": 6,
+    "price": 3900
+  },
+  {
+    "id": "tr-st-60x60x3",
+    "name": "Труба профильная 60×60×3",
+    "type": "профильная",
+    "material": "сталь",
+    "size": "60×60",
+    "wallThickness": 3,
+    "lengthM": 6,
+    "price": 2900
+  },
+  {
+    "id": "tr-st-d57x3",
+    "name": "Труба круглая Ø57×3",
+    "type": "круглая",
+    "material": "сталь",
+    "diameter": 57,
+    "wallThickness": 3,
+    "lengthM": 6,
+    "price": 3200
+  },
+  {
+    "id": "tr-st-d108x4",
+    "name": "Труба круглая Ø108×4",
+    "type": "круглая",
+    "material": "сталь",
+    "diameter": 108,
+    "wallThickness": 4,
+    "lengthM": 6,
+    "price": 6800
+  },
+  {
+    "id": "tr-ss-d100x2",
+    "name": "Труба нержавеющая Ø100×2",
+    "type": "круглая",
+    "material": "нержавейка",
+    "diameter": 100,
+    "wallThickness": 2,
+    "lengthM": 6,
+    "price": 18500
+  },
+  {
+    "id": "tr-ss-d50x1.5",
+    "name": "Труба нержавеющая Ø50×1.5",
+    "type": "круглая",
+    "material": "нержавейка",
+    "diameter": 50,
+    "wallThickness": 1.5,
+    "lengthM": 6,
+    "price": 9200
+  },
+  {
+    "id": "tr-cu-d22x1",
+    "name": "Труба медная Ø22×1",
+    "type": "круглая",
+    "material": "медь",
+    "diameter": 22,
+    "wallThickness": 1,
+    "lengthM": 3,
+    "price": 2400
+  },
+  {
+    "id": "tr-cu-d15x1",
+    "name": "Труба медная Ø15×1",
+    "type": "круглая",
+    "material": "медь",
+    "diameter": 15,
+    "wallThickness": 1,
+    "lengthM": 3,
+    "price": 1700
+  }
+]

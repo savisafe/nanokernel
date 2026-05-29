@@ -90,6 +90,7 @@ export class WhatsAppService {
     for (const message of messages) {
       const shouldProcess = await this.idempotencyService.tryProcess(
         "whatsapp",
+        message.from,
         message.messageId,
       );
       if (!shouldProcess) {
@@ -114,7 +115,7 @@ export class WhatsAppService {
             ...message,
           });
         } catch (e) {
-          await this.idempotencyService.revert("whatsapp", message.messageId);
+          await this.idempotencyService.revert("whatsapp", message.from, message.messageId);
           throw e;
         }
         if (dev) {

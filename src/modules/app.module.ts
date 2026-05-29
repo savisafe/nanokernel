@@ -9,6 +9,11 @@ import { PrismaModule } from "./prisma/prisma.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { RagModule } from "./rag/rag.module";
+import { SnippetsModule } from "./snippets/snippets.module";
+import { BotUsageModule } from "./bot-usage/bot-usage.module";
+import { SkillsModule } from "./skills/skills.module";
+import { ScriptsModule } from "./scripts/scripts.module";
+import { SafetyModule } from "./safety/safety.module";
 
 @Module({
   imports: [
@@ -16,6 +21,11 @@ import { RagModule } from "./rag/rag.module";
     PrismaModule,
     IdempotencyModule,
     LlmModule,
+    SnippetsModule,
+    BotUsageModule,
+    SkillsModule,
+    ScriptsModule,
+    SafetyModule,
     DialogModule,
     DialogQueueModule,
     HealthModule,
