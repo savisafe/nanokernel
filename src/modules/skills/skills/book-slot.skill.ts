@@ -27,6 +27,8 @@ export class BookSlotSkill implements Skill {
 
   readonly name = "book_slot";
   readonly description = "Создать запись клиента после подтверждения. Используется FSM-скриптом, не LLM.";
+  /** FSM-only: вызывается script-runner'ом на подтверждении, НЕ отдаётся LLM как tool. */
+  readonly fsmOnly = true;
   readonly parameters = {
     type: "object",
     properties: {

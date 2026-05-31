@@ -26,10 +26,12 @@ const fullYear = (y: number) => (y < 100 ? 2000 + y : y);
 
 /** Резолвит «человеческую» дату в конкретный день. null — если не распознали. */
 export function resolveSingleDate(raw: string, today: Date = new Date()): Date | null {
-  const lower = norm(raw);
-  if (lower === "сегодня") return today;
-  if (lower === "завтра") return addDays(today, 1);
-  if (lower === "послезавтра") return addDays(today, 2);
+  // Отбрасываем ведущий предлог («в субботу», «во вторник», «на завтра») и матчим
+  // относительные дни ПО НАЧАЛУ строки, чтобы составное «завтра в 12:00» тоже распозналось.
+  const lower = norm(raw).replace(/^(в|во|на)\s+/u, "");
+  if (lower.startsWith("послезавтра")) return addDays(today, 2);
+  if (lower.startsWith("сегодня")) return today;
+  if (lower.startsWith("завтра")) return addDays(today, 1);
 
   for (const [stem, wd] of Object.entries(WEEKDAYS)) {
     if (lower.startsWith(stem)) {
@@ -38,7 +40,7 @@ export function resolveSingleDate(raw: string, today: Date = new Date()): Date |
     }
   }
 
-  const numeric = lower.match(/^(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?$/);
+  const numeric = lower.match(/^(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?/);
   if (numeric) {
     const day = Number(numeric[1]);
     const month = Number(numeric[2]);

@@ -45,10 +45,15 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
   };
 
   const llm =
-    v2.llm?.temperature !== undefined || v2.llm?.maxTokens !== undefined
+    v2.llm?.temperature !== undefined ||
+    v2.llm?.maxTokens !== undefined ||
+    v2.llm?.toolCalling !== undefined ||
+    v2.llm?.contextMessages !== undefined
       ? {
           ...(v2.llm.temperature !== undefined ? { temperature: v2.llm.temperature } : {}),
           ...(v2.llm.maxTokens !== undefined ? { maxTokens: v2.llm.maxTokens } : {}),
+          ...(v2.llm.toolCalling !== undefined ? { toolCalling: v2.llm.toolCalling } : {}),
+          ...(v2.llm.contextMessages !== undefined ? { contextMessages: v2.llm.contextMessages } : {}),
         }
       : undefined;
 
@@ -185,6 +190,19 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
                 onCancel: ts(def.onCancel) ?? def.onCancel,
                 ...(def.onMaxAttempts
                   ? { onMaxAttempts: ts(def.onMaxAttempts)! }
+                  : {}),
+                ...(def.extraction
+                  ? {
+                      extraction: {
+                        intent: ts(def.extraction.intent) ?? def.extraction.intent,
+                        fields: Object.fromEntries(
+                          Object.entries(def.extraction.fields).map(([k, v]) => [
+                            k,
+                            ts(v) ?? v,
+                          ]),
+                        ),
+                      },
+                    }
                   : {}),
               },
             ];

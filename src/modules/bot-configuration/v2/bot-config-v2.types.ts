@@ -158,6 +158,8 @@ const llmSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
   /** Сколько сообщений истории передавать LLM. */
   contextMessages: z.number().int().min(2).max(50).optional(),
+  /** "off" — не давать LLM function-calling (skills дёргает FSM/роутер). По умолчанию "auto". */
+  toolCalling: z.enum(["auto", "off"]).optional(),
 });
 
 const channelTelegramSchema = z.object({
@@ -221,6 +223,21 @@ const scriptSpecSchema = z.object({
    * Если не задан — FSM просто завершается без спец-сообщения.
    */
   onMaxAttempts: z.string().min(1).optional(),
+  /**
+   * Опционально: LLM-извлечение намерения и слотов из СВОБОДНОЙ речи (вместо хрупких
+   * regex-триггеров и regex-валидации). Доменно-нейтральный движок строит промпт из
+   * этого блока — никакого хардкода в ядре.
+   *  - `intent`: что хочет клиент (для классификации «этот сценарий / нет»);
+   *  - `fields`: карта «имя слота → подсказка LLM, как извлечь/нормализовать значение».
+   * Ключи `fields` ДОЛЖНЫ совпадать с именами слотов. Поддерживает {placeholders}
+   * businessInfo ({masters}, {servicesList}, {workingHours}…) — интерполируются при адаптации.
+   */
+  extraction: z
+    .object({
+      intent: z.string().min(1),
+      fields: z.record(z.string().min(1), z.string().min(1)),
+    })
+    .optional(),
 });
 
 const notificationsSchema = z.object({

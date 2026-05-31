@@ -23,6 +23,12 @@ export interface Skill {
   readonly description: string;
   /** JSON Schema для параметров (поле `parameters` в OpenAI tools). */
   readonly parameters: Record<string, unknown>;
+  /**
+   * Если true — навык НЕ отдаётся LLM как tool (его дёргает FSM-скрипт напрямую
+   * через registry.get). Нужно, чтобы FSM-only навыки (напр. book_slot) не
+   * раздували tool-набор и не провоцировали маленькую модель на кривые tool_call.
+   */
+  readonly fsmOnly?: boolean;
   /** Выполнить skill с заранее разобранными аргументами. */
   execute(args: Record<string, unknown>, ctx: SkillContext): Promise<SkillResult>;
 }

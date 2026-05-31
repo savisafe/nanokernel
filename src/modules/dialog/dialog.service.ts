@@ -252,7 +252,7 @@ export class DialogService {
 
     const nextStage = conversation.stage;
     const templateReply = this.buildReply(nextStage, input.text, snap);
-    const rawReply = await this.tryLlmReply(
+    const llmReply = await this.tryLlmReply(
       conversation.id,
       nextStage,
       input.channel,
@@ -261,7 +261,7 @@ export class DialogService {
       snap,
       progress?.onLlmTextDelta,
     );
-    const safeOut = this.safetyOut.apply(rawReply, snap.bot);
+    const safeOut = this.safetyOut.apply(llmReply.replyText, snap.bot);
     const replyText = safeOut.text;
     await this.prisma.conversation.update({
       where: { id: conversation.id },
@@ -271,13 +271,17 @@ export class DialogService {
       },
     });
 
-    await this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: "assistant",
-        text: replyText,
-      },
-    });
+    // Битый ответ (фолбэк / обрезанный finish_reason=length) клиенту отправляем, но в историю
+    // НЕ пишем: иначе он копится и сам ломает следующие ходы маленькой модели (спираль «техсбоев»).
+    if (!llmReply.degraded) {
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: replyText,
+        },
+      });
+    }
 
     return { replyText, stage: nextStage };
   }
@@ -365,7 +369,7 @@ export class DialogService {
     userText: string,
     snap: DialogRuntimeSnapshot,
     onTextDelta?: (text: string) => void | Promise<void>,
-  ): Promise<string> {
+  ): Promise<{ replyText: string; degraded: boolean }> {
     const r = await this.tryLlmReplyCore(
       conversationId,
       stage,
@@ -375,7 +379,7 @@ export class DialogService {
       snap,
       onTextDelta,
     );
-    return r.replyText;
+    return { replyText: r.replyText, degraded: r.degraded };
   }
 
   private async tryLlmReplyWithDiagnostics(
@@ -399,6 +403,7 @@ export class DialogService {
     onTextDelta?: (text: string) => void | Promise<void>,
   ): Promise<{
     replyText: string;
+    degraded: boolean;
     diagnostics: DialogOutputWithDiagnostics["diagnostics"];
   }> {
     // Per-bot override победит дефолтный templateFallback. Это даёт каждому боту
@@ -409,6 +414,7 @@ export class DialogService {
       await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
       return {
         replyText: llmFallback,
+        degraded: true,
         diagnostics: await this.buildDiagnosticsForDisabledLlm(snap, stage, channel),
       };
     }
@@ -421,28 +427,46 @@ export class DialogService {
     });
     rows.reverse();
 
+    // Не кормим модель её же фолбэками («техсбой»): они копятся в истории и отравляют
+    // генерацию — маленькая модель начинает отвечать пусто (finish_reason=length) даже
+    // без tools, что плодит новые фолбэки. Чистим их из контекста (для LLM, не из БД).
+    const fbPrefix = snap.bot.guardrails?.llmFallbackReply?.split("{")[0]?.trim();
+    const contextRows =
+      fbPrefix && fbPrefix.length > 0
+        ? rows.filter((m) => !(m.role === "assistant" && m.text.startsWith(fbPrefix)))
+        : rows;
+
     const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
     const knowledgeContext = retrieval.context;
 
     const system = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
     const messages: LlmChatMessage[] = [
       { role: "system", content: system },
-      ...rows.map((m) => ({
+      ...contextRows.map((m) => ({
         role: (m.role === "client" ? "user" : "assistant") as "user" | "assistant",
         content: m.text,
       })),
     ];
 
     const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
+    // FSM-only навыки (напр. book_slot) НЕ отдаём LLM как tools: их дёргает FSM
+    // напрямую (registry.get), а лишние/тяжёлые tools провоцируют маленькую модель
+    // на пустой ответ (finish_reason=length) → фолбэк «техсбой».
+    // llm.toolCalling:"off" — LLM вообще без tools (чистый текст, работает на любой
+    // модели); навыки тогда дёргает только FSM/роутер (инверсия управления).
+    const llmTools =
+      snap.bot.llm?.toolCalling === "off"
+        ? []
+        : enabledSkills.filter((s) => !s.fsmOnly);
     const llmOptions = {
       ...(snap.bot.llm ?? {}),
       ...(onTextDelta ? { onTextDelta } : {}),
     };
-    const out = enabledSkills.length > 0
+    const out = llmTools.length > 0
       ? await this.llmService.completeWithTools(
           messages,
           llmOptions,
-          enabledSkills.map((s) => this.skills.toToolSpec(s)),
+          llmTools.map((s) => this.skills.toToolSpec(s)),
           async (name, args) => {
             const skill = this.skills.get(name);
             if (!skill) {
@@ -466,7 +490,7 @@ export class DialogService {
         const p = out.usage?.promptTokens ?? "?";
         const c = out.usage?.completionTokens ?? "?";
         this.logger.debug(
-          `llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"} skills=${enabledSkills.length}`,
+          `llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"} tools=${llmTools.length}`,
         );
       }
     } else {
@@ -478,8 +502,13 @@ export class DialogService {
       );
     }
     const replyText = out?.text ?? llmFallback;
+    // «Битый» = модель не дала ВООБЩЕ никакого текста (out === null → отдаём фолбэк-нудж).
+    // Только такой ответ не сохраняем в историю. Обрезанный по лимиту, но С ТЕКСТОМ — СОХРАНЯЕМ:
+    // иначе теряется контекст и следующая реплика клиента («давай») повисает без привязки.
+    const degraded = !out;
     return {
       replyText,
+      degraded,
       diagnostics: {
         systemPrompt: system,
         knowledgeContext,
@@ -565,6 +594,11 @@ export class DialogService {
   /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */
   private getLlmContextMessageLimit(bot: ResolvedBotConfiguration): number {
     const cfg = this.effectiveFor(bot).llmContextMessages;
+    // Per-bot llm.contextMessages (configuration.json) имеет приоритет над env LLM_CONTEXT_MESSAGES.
+    const perBot = bot.llm?.contextMessages;
+    if (perBot !== undefined && Number.isFinite(perBot)) {
+      return Math.min(cfg.max, Math.max(cfg.min, Math.floor(perBot)));
+    }
     const raw = process.env[cfg.envVarName]?.trim();
     if (raw === undefined || raw === "") {
       return cfg.defaultLimit;

@@ -39,6 +39,8 @@ export interface LlmCompleteResult {
     totalTokens?: number;
   };
   model?: string;
+  /** Причина остановки генерации. "length" = обрезано по лимиту токенов (часто мусор). */
+  finishReason?: string;
 }
 
 export interface LlmToolSpec {
@@ -78,9 +80,20 @@ export class LlmService {
     }
     const choice = await this.chatRequest(messages, options);
     if (!choice?.text || choice.text.length === 0) {
+      if (choice) {
+        this.logger.warn(
+          `LLM null reply: пустой ответ модели без tools (finish_reason=${choice.finishReason ?? "?"}). ` +
+            `finish_reason=length → модель исчерпала бюджет токенов, не выдав текста.`,
+        );
+      }
       return null;
     }
-    return { text: choice.text, usage: choice.usage, model: choice.model };
+    return {
+      text: choice.text,
+      usage: choice.usage,
+      model: choice.model,
+      finishReason: choice.finishReason,
+    };
   }
 
   /**
@@ -110,6 +123,11 @@ export class LlmService {
     for (let i = 0; i < maxIterations; i++) {
       const choice = await this.chatRequest(messages, options, tools);
       if (!choice) {
+        this.logger.warn(
+          `LLM null reply: запрос к LLM не дал ответа в tool-loop ` +
+            `(iteration=${i + 1}/${maxIterations}, tools=${tools.length}). ` +
+            `Конкретная причина — выше (LLM HTTP … / request failed / aborted) = «причина A».`,
+        );
         return null;
       }
       promptTokens += choice.usage?.promptTokens ?? 0;
@@ -144,14 +162,28 @@ export class LlmService {
           text: choice.text,
           usage: { promptTokens, completionTokens },
           model: lastModel,
+          finishReason: choice.finishReason,
         };
       }
-      return null;
+      this.logger.warn(
+        `LLM пусто на tool-ходу (finish_reason=${choice.finishReason ?? "?"}, ` +
+          `iteration=${i + 1}/${maxIterations}, tools=${tools.length}) — модель не справилась с ` +
+          `function-calling. Повторяю запрос БЕЗ tools (force-retry), чтобы всё равно дать клиенту ответ.`,
+      );
+      break;
     }
 
-    // Лимит итераций исчерпан — принудительно просим ответ без tools.
+    // Сюда попадаем, исчерпав итерации ИЛИ после пустого tool-ответа (break выше).
+    // Принудительно просим ответ БЕЗ tools: обычная генерация у маленькой модели
+    // надёжна (в отличие от function-calling), поэтому клиент получит текст, а не «техсбой».
     const final = await this.chatRequest(messages, options);
     if (!final?.text || final.text.length === 0) {
+      if (final) {
+        this.logger.warn(
+          `LLM null reply: пустой ответ даже на форс-запросе БЕЗ tools ` +
+            `(finish_reason=${final.finishReason ?? "?"}) — тогда уже фолбэк.`,
+        );
+      }
       return null;
     }
     promptTokens += final.usage?.promptTokens ?? 0;
@@ -160,6 +192,7 @@ export class LlmService {
       text: final.text,
       usage: { promptTokens, completionTokens },
       model: final.model ?? lastModel,
+      finishReason: final.finishReason,
     };
   }
 
@@ -415,6 +448,13 @@ export class LlmService {
 
     const toolCalls = [...toolCallsByIndex.values()].filter((tc) => tc.function.name);
     const trimmedText = text.trim();
+
+    if (toolCallsByIndex.size > 0 && toolCalls.length === 0) {
+      this.logger.warn(
+        `LLM stream: ${toolCallsByIndex.size} tool_call-дельт с пустым именем — отброшены как битые ` +
+          `(finish_reason=${finishReason ?? "?"}). Модель пыталась вызвать навык, но сформировала вызов некорректно.`,
+      );
+    }
 
     if (this.shouldLogLlmDev()) {
       if (toolCalls.length > 0) {

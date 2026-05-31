@@ -29,6 +29,10 @@ export interface ResolvedPersona {
 export interface ResolvedBotLlmSettings {
   temperature?: number;
   maxTokens?: number;
+  /** "off" — LLM без function-calling (skills дёргает FSM/роутер). По умолчанию поведение "auto". */
+  toolCalling?: "auto" | "off";
+  /** Сколько последних сообщений истории передавать LLM. Имеет приоритет над env LLM_CONTEXT_MESSAGES. */
+  contextMessages?: number;
 }
 
 export interface ResolvedBurstLimit {

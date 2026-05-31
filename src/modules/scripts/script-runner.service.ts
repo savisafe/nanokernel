@@ -11,6 +11,7 @@ import {
   ScriptStepInput,
   ScriptStepOutcome,
 } from "./script.types";
+import { SlotExtractorService } from "./slot-extractor.service";
 
 @Injectable()
 export class ScriptRunnerService {
@@ -35,6 +36,7 @@ export class ScriptRunnerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly skills: SkillsRegistry,
+    private readonly extractor: SlotExtractorService,
   ) {}
 
   async step(input: ScriptStepInput): Promise<ScriptStepOutcome> {
@@ -57,6 +59,17 @@ export class ScriptRunnerService {
       return this.continueActive(conversation, bot.id, conversation.activeScript, def, userText);
     }
 
+    // Вход в сценарий БЕЗ хардкода триггеров: для каждого скрипта с блоком `extraction`
+    // (он описан в КОНФИГЕ) спрашиваем LLM — подходит ли реплика под его намерение, и
+    // заодно извлекаем слоты. Regex-триггеры остаются дешёвым фолбэком (LLM off/сбой).
+    for (const [scriptName, def] of Object.entries(scripts)) {
+      if (!def.extraction) continue;
+      const ex = await this.extractor.extract(def, userText);
+      if (ex?.intentMatch) {
+        return this.activate(conversation, scriptName, def, userText, ex.slots);
+      }
+    }
+
     const triggered = this.findTriggeredScript(userText, scripts);
     if (!triggered) {
       return { handled: false };
@@ -69,6 +82,7 @@ export class ScriptRunnerService {
     name: string,
     def: ScriptSpec,
     triggerText: string,
+    extractedSlots?: ScriptSlots,
   ): Promise<ScriptStepOutcome> {
     const firstSlot = def.order[0];
     if (!firstSlot || !def.slots[firstSlot]) {
@@ -76,9 +90,11 @@ export class ScriptRunnerService {
       return { handled: false };
     }
 
-    // Предзаполняем слоты тем, что клиент уже назвал (в триггер-сообщении и недавней
-    // истории) — чтобы не переспрашивать услугу/мастера, если они уже прозвучали.
-    const prefilled = await this.prefillSlots(conversation.id, name, def, triggerText);
+    // Предзаполняем слоты тем, что клиент уже назвал. Если есть LLM-извлечение — берём из
+    // него (нормализованные значения из любой формулировки); иначе — regex-фолбэк по истории.
+    const prefilled = extractedSlots
+      ? this.prefillFromExtracted(name, def, extractedSlots)
+      : await this.prefillSlots(conversation.id, name, def, triggerText);
     const firstUnfilled = def.order.find((slot) => !(slot in prefilled));
 
     if (!firstUnfilled) {
@@ -173,6 +189,23 @@ export class ScriptRunnerService {
     return prefilled;
   }
 
+  /**
+   * Префилл слотов из LLM-извлечения (intent+слоты). Значения уже нормализованы моделью
+   * («днём в 2»→«14:00»), но всё равно сверяем с validate-regex как страховкой от мусора.
+   */
+  private prefillFromExtracted(name: string, def: ScriptSpec, slots: ScriptSlots): ScriptSlots {
+    const out: ScriptSlots = {};
+    for (const slotName of def.order) {
+      const v = slots[slotName];
+      if (!v) continue;
+      const spec = def.slots[slotName];
+      if (spec && this.slotValueValid(name, slotName, spec.validate, v)) {
+        out[slotName] = v;
+      }
+    }
+    return out;
+  }
+
   private async continueActive(
     conversation: ScriptStepInput["conversation"],
     botId: string,
@@ -200,7 +233,10 @@ export class ScriptRunnerService {
         await this.clearState(conversation.id);
         return { handled: false };
       }
-      return this.handleSlot(conversation, name, def, slots, slotName, spec, userText, attempts);
+      // LLM-нормализация значений слотов из свободной речи («днём в 2»→«14:00») вместо regex —
+      // по fields-подсказкам из конфига скрипта (extraction).
+      const ex = await this.extractor.extract(def, userText);
+      return this.handleSlot(conversation, name, def, slots, slotName, spec, userText, attempts, ex?.slots);
     }
 
     // Неизвестное состояние — лечим сбросом.
@@ -218,13 +254,25 @@ export class ScriptRunnerService {
     spec: SlotSpec,
     userText: string,
     attempts: number,
+    exSlots?: Record<string, string>,
   ): Promise<ScriptStepOutcome> {
-    const value = userText.trim();
+    // Значение слота: нормализованное из LLM-извлечения (если модель его поняла) либо сырой
+    // текст. Ключи = имена слотов (из конфига extraction.fields). name/phone — обычно как есть.
+    const extracted: Record<string, string> = exSlots ?? {};
+    const value = (extracted[slotName] ?? userText).trim();
     if (!value || !this.slotValueValid(name, slotName, spec.validate, value)) {
       return this.failSlot(conversation, name, def, slots, slotName, spec, attempts);
     }
 
-    const updatedSlots = { ...slots, [slotName]: value };
+    // Мержим прочие слоты, названные в этой же реплике («2 июня в 3» на вопрос о времени).
+    const updatedSlots: ScriptSlots = { ...slots, [slotName]: value };
+    for (const [field, v] of Object.entries(extracted)) {
+      if (field === slotName || !v || field in updatedSlots) continue;
+      const fSpec = def.slots[field];
+      if (fSpec && this.slotValueValid(name, field, fSpec.validate, v)) {
+        updatedSlots[field] = v;
+      }
+    }
     const idx = def.order.indexOf(slotName);
     // Пропускаем уже заполненные (предзаполненные) слоты дальше по порядку.
     const nextSlotName =
