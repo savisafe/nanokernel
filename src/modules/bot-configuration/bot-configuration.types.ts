@@ -96,4 +96,21 @@ export interface ResolvedBotConfiguration {
    * `{placeholders}` в snippets/intro и инжектятся в системный промпт.
    */
   businessInfo?: ResolvedBusinessInfo;
+  /** Служебные уведомления (напр. о новой записи). */
+  notifications?: ResolvedNotifications;
+  /** Интеграция с CRM Mesto. */
+  crm?: ResolvedCrm;
+}
+
+export interface ResolvedNotifications {
+  /** Telegram chat id служебного чата для уведомлений; не задан — не шлём. */
+  telegramChatId?: number;
+}
+
+export interface ResolvedCrm {
+  provider: "mesto";
+  /** Базовый URL Mesto без хвостового слеша. */
+  baseUrl: string;
+  /** Имя env-переменной с API-ключом бизнеса. */
+  apiKeyEnv: string;
 }

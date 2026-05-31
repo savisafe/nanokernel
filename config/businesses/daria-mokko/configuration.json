@@ -8,6 +8,14 @@
       "webhookSecret": "salon-admin-7f4c2d-replace-me"
     }
   },
+  "notifications": {
+    "telegramChatId": 0
+  },
+  "crm": {
+    "provider": "mesto",
+    "baseUrl": "http://localhost:3001",
+    "apiKeyEnv": "DARIA_MOKKO_MESTO_KEY"
+  },
   "persona": {
     "role": "онлайн-менеджер студии бровей DARIA MOKKO STUDIO",
     "language": "ru",
@@ -227,7 +235,7 @@
       "Не отправляй больше одного сообщения подряд без ответа клиента. Если предыдущее не понято или клиент молчит — жди, не уточняй повторно, не предлагай альтернативы, не извиняйся новыми сообщениями."
     ]
   },
-  "skills": ["lookup_service", "check_availability", "book_slot"],
+  "skills": ["lookup_service", "check_availability", "book_slot", "cancel_booking", "reschedule_booking"],
   "scripts": {
     "booking": {
       "description": "Запись клиента в студию бровей: услуга → мастер (опционально) → день → время → имя → телефон → подтверждение.",

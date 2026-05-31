@@ -4,12 +4,13 @@
 - Name: `ai-bot`
 - Goal: Переиспользуемое ядро (платформа) для AI Telegram-ботов. Один процесс отдаёт N ботов через разные токены и webhook URL. Каждый бот = декларативный JSON-конфиг (BotConfig v2).
 - Current stage: Platform core complete (Phases 0-9 of `docs/PROMPT_PLAN.md`). 4 рабочих референс-сборки: `salon-admin`, `pipe-sales`, `knowledge-consultant`, `open-topics`.
+- **Интеграция с Mesto CRM (web) реализована** (двусторонняя, Mesto — авторитет расписания; сборка `tsc` зелёная). Как связать — `docs/CONNECTING_TO_MESTO.md`; сторона бота — `docs/MESTO_INTEGRATION.md`; контракт — `mesto-web/docs/api/bot-integration.md`.
 
 ## Implemented
 
 ### BotConfig v2 — единый декларативный формат
 - `src/modules/bot-configuration/v2/` — zod-схема + адаптер + system-prompt-builder.
-- Поля: `persona` (role/language/tone/managerName/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimitReply, llmFallbackReply, rateLimit, burstLimit, repeatLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM; per-slot `ask/validate/validateErrorReply/extract`, плюс `order/confirm/onConfirm/onCancel/maxSlotAttempts/onMaxAttempts`), `businessInfo` (address, phone, onlineBookingUrl, workingHours, masters[], services[{name,price?,duration?,description?}]), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken).
+- Поля: `persona` (role/language/tone/managerName/intro), `goals[]`, `guardrails` (refuseTopics, neverInvent, stickToScope, safetyChecks, refuseReply, rateLimitReply, llmFallbackReply, rateLimit, burstLimit, repeatLimit, maxReplyChars), `knowledge.snippets[]`, `style` (humanLike, rules), `llm` (temperature, maxTokens, contextMessages), `skills[]`, `scripts` (FSM; per-slot `ask/validate/validateErrorReply/extract`, плюс `order/confirm/onConfirm/onCancel/maxSlotAttempts/onMaxAttempts`), `businessInfo` (address, phone, onlineBookingUrl, workingHours, masters[], services[{name,price?,duration?,description?}]), `channel.telegram` (tokenEnv, webhookSecret, apiSecretToken), `notifications` (telegramChatId — служебный чат для уведомлений о записи).
 - **Template-плейсхолдеры в адаптере**: `persona.intro`, `snippets[*].reply`, `guardrails.*Reply`, `scripts.*.{ask, validateErrorReply, confirm, on*Reply, onCancel}` прогоняются через `interpolateTemplate` с переменными из `persona.managerName` + `businessInfo` + `name`. Доступные плейсхолдеры: `{managerName}`, `{companyName}`, `{address}`, `{phone}`, `{onlineBookingUrl}`, `{workingHours}`, `{masters}` (join ", "), `{servicesList}` (форматированный markdown). При коллизии с FSM-слотом (например, `{phone}` тоже слот в `booking`) — переменная исключается из vars per-script, плейсхолдер остаётся для runtime-резолва.
 - Адаптер собирает `dialog.systemPrompt.template` из декларативных полей; runtime читает один формат, без legacy ветки.
 - Файлы: `config/configurations/<id>.json` со `schemaVersion: 2`. Legacy v1 формат снесён в Phase 9a.
@@ -38,6 +39,8 @@
   - **Retry/escalation** (`scripts.*.maxSlotAttempts`, default 2; `scripts.*.onMaxAttempts`): число неудач по слоту кодируется в `activeScriptState` как `slot:<name>#<n>`. На лимите — FSM завершается сообщением `onMaxAttempts` (поддерживает `{placeholders}` businessInfo, интерполируется в адаптере) либо `handled:false` → ход уходит дальше по pipeline (snippet/LLM). Гасит бесконечную петлю `validateErrorReply`.
 - **SkillsRegistry + DomainDataService** (`src/modules/skills/`) — реестр через DI-токен `SKILL_PROVIDERS_TOKEN`. Реальные skills: `lookup_service` (salon), `lookup_product` (pipes), `book_slot` (FSM action — пишет в `Booking`). Данные: per-business `config/businesses/<id>/data/<entity>.json` (с legacy-fallback `config/data/<botId>/<entity>.json`), резолв через `src/modules/shared/config-paths.ts`.
   - `lookup_service` поддерживает опц. аргумент `master`: возвращает `priceForMaster`/`durationForMaster` + полные карты `pricesByMaster`/`durationsByMaster`. Данные услуги: `{ id, name, category?, price, prices?: {master→число}, duration, durations?: {master→мин}, notes? }`. Сопоставление мастера по корню имени (падежи: «Дарье»→«Дарья»).
+  - **`service-catalog.ts`** — общие чистые помощники (`findServices`, `priceFor`, `durationFor`, `valueForMaster`, `masterMatches`), используются и `lookup_service`, и `book_slot` (без дублирования). `findServices` ранжирует: бонус за совпадение в начале названия + тай-брейк по длине имени (чтобы единичный токен «коррекция» не прилипал к «Оформление … (коррекция + окрашивание)»).
+  - **`book_slot`** теперь принимает слот `master`, считает `amount` по услуге×мастеру (через `service-catalog`) и пишет `master`/`amount` в `Booking`. После создания записи — пост-хук **`BookingNotifierService`**: служебное Telegram-уведомление о новой записи в `notifications.telegramChatId` (формат «Новая запись: дата / услуга / мастер / сумма»; дата нормализуется best-effort к ДД.ММ.ГГГГ для «сегодня/завтра/ДД.ММ/ДД месяц»). Fail-open: нет chatId/токена или ошибка отправки — основной поток не ломается. Это TODO §11a; §11b (своя CRM) повесится на тот же хук.
 - **LlmService** (`src/modules/llm/`) — OpenAI-compatible (`/chat/completions`). Tool calls (function calling), SSE streaming с `stream_options.include_usage`. `completeWithTools` лупит до 4 итераций, на последней — без tools для финального текста. `onTextDelta` callback в `LlmCompleteOptions` для streaming.
 - **SafetyInService** (`src/modules/safety/`) — `checkRateLimit` (Redis fixed-window per `{bot,channel,user}`), `checkBurst` / `checkRepeat` (flood-защита, см. FloodProtectionService), `checkContent` (injection-regex RU+EN + topic-keywords для `medical/legal/financial/self_harm/injection`). Injection-паттерны используют `[\p{L}\d_]+` (`\w` в JS не покрывает кириллицу даже с `/u`). Opt-in через `guardrails.safetyChecks`.
 - **FloodProtectionService** (`src/modules/safety/flood-protection.service.ts`) — два сигнала антифлуда поверх Redis:
@@ -50,8 +53,18 @@
 - **DialogService** (`src/modules/dialog/`) — оркестратор pipeline. `process(input, { onLlmTextDelta? })` — стриминг callback прокидывается в LlmService.
 - **TelegramService** (`src/modules/telegram/`) — placeholder-сообщение при первой стрим-дельте, throttled `editMessageText` ≥500ms, typing-indicator каждые 4 сек, idempotency по `messageId`, серийная обработка per `chatId` через `inboundChains`.
 
+### Интеграция с Mesto CRM (web)
+Двусторонняя: бот читает реальное расписание Mesto и пишет записи под его валидацией (Mesto — авторитет, закрытые даты/часы enforce'ит он). Контракт — `mesto-web/docs/api/bot-integration.md`; связать — `docs/CONNECTING_TO_MESTO.md`.
+- **Конфиг `crm`** (BotConfig v2): `{ provider:"mesto", baseUrl, apiKeyEnv }`. Ключ per-business (`mst_live_…`) — в env (имя в `apiKeyEnv`), в JSON только имя переменной. Zod-схема + `ResolvedCrm` + маппинг в адаптере.
+- **`MestoClientService`** (`src/modules/skills/mesto-client.service.ts`) — HTTP-клиент, Bearer per-bot. Методы `getAvailability/createBooking/patchBooking/cancelBooking/listBookings/upsertClient`. Ретраит только сеть/5xx; 4xx (валидация/блок/конфликт) отдаёт как есть. `status:0` = не ушло (нет конфига/ключа или сеть после ретраев).
+- **`check_availability`** skill — реальные свободные окна (источник правды; guardrails запрещают выдумывать). Резолв услуги из каталога + даты (`datetime.util`) → `getAvailability` → дни+времена для LLM.
+- **`book_slot` (вариант C — общий FSM-движок НЕ трогали).** На подтверждении: локальный `Booking` (его id → `idempotency_key`) → резолв названных даты/времени в реальный слот через `getAvailability` → синхронный `POST /bookings`. `201/200` → `synced` (+`mestoAppointmentId`); `422/409` → `ok:false` (FSM → `errorReply` «недоступно»); `5xx`/сеть → fail-open (запись остаётся локально + алерт студии). CRM не настроена → прежнее поведение (локальный Booking + notify).
+- **`cancel_booking` / `reschedule_booking`** (LLM-callable) — находят активную запись клиента (`BookingSyncService.findClientAppointment` по диалогу/телефону/`listBookings`) и зовут `cancelBooking`/`patchBooking` (перенос ревалидируется через availability).
+- **`BookingSyncService`** — общий `findOpenSlot` (резолв слота) + `findClientAppointment`; переиспользуется book_slot/cancel/reschedule.
+- **`datetime.util.ts`** — разбор «человеческих» дат/времени (сегодня/завтра/день недели/ДД.ММ/«ДД месяц»; «после обеда»/«15:00»), `pickSlotStartsAt`, `normalizePhone` (E.164), `isAnyMaster`.
+
 ### Storage
-- **PostgreSQL** (Prisma): `User`, `Conversation` (+ `activeScript/State/Slots` для FSM), `Message`, `ProcessedInboundMessage` (idempotency), `Booking` (FSM result), `BotUsage`.
+- **PostgreSQL** (Prisma): `User`, `Conversation` (+ `activeScript/State/Slots` для FSM), `Message`, `ProcessedInboundMessage` (idempotency), `Booking` (FSM result; + `master`, `amount` — миграция `20260529120000_booking_master_amount`; + sync-поля `mestoAppointmentId`/`mestoClientId`/`syncStatus`/`syncedAt` для Mesto — `prisma generate` сделан, `prisma migrate` на БД бота нужен), `BotUsage`.
 - **Redis** — BullMQ `dialog-inbound` queue, per-user rate-limit (separate ioredis-коннект, fail-open).
 - **sqlite-vec** — RAG индекс (in-memory, опц., `useRag` в config).
 - Все legacy таблицы (`AdminUser`, `Tenant`, `BotConfiguration`, `PromptProfile`, `HandoffEvent`, ENUM `AdminRole`) удалены в Phase 9c миграцией `20260526150000_drop_legacy_models`.
@@ -73,6 +86,7 @@
 - **Декларативные guardrails ≠ только текст.** safety-checks в коде дублируют текстовые правила system prompt: модель может быть взломана, программный фильтр — нет.
 - **Skills vs RAG.** Структурные данные (каталоги, услуги, прайсы) → skills через tool calling. Документы (свободный текст, регламенты) → RAG. Не смешивать.
 - **FSM scripts ≠ stage в БД.** Бронирование = state machine с slot-filling + validation, не «просто промпт».
+- **Mesto — авторитет расписания; `book_slot` резолвит слот (вариант C).** Рабочие часы/закрытые даты enforce'ит Mesto, бот не выдумывает окна. `book_slot` сам сверяет названные дату/время с availability и шлёт конкретный `starts_at` — **без переделки общего FSM-движка** (вариант A с динамическим шагом выбора слота и циклом переспроса на 409 — отложен). На недоступность Mesto — fail-open (не теряем запись, алертим студию). Отмена/перенос — LLM-callable навыки, не FSM.
 - **AsyncLocalStorage для bot context** в Telegram-стороне. Альтернатива — пробрасывать `bot` через 20+ сайтов — отвергнута.
 - **Pipeline стадии явные.** Каждая стадия может ответить и завершить ход.
 - **Versioning конфигов.** v1 legacy полностью снесён в Phase 9. Будущие изменения — `schemaVersion: 3+` с миграцией.
@@ -90,6 +104,8 @@
 - **TELEGRAM_BOT_TOKEN env fallback.** Сохранён для legacy single-bot deploy через `POST /webhooks/telegram`. Окончательный снос — когда все продакшены перейдут на multi-bot маршрут.
 
 ## Change Log
+
+- **Mesto CRM integration (2026-05-31)** — двусторонняя интеграция с web-CRM Mesto. Конфиг-блок `crm` (BotConfig v2: provider/baseUrl/apiKeyEnv) + `ResolvedCrm` + адаптер. `MestoClientService` (Bearer per-bot, ретраи 5xx/сеть). Навыки `check_availability`, `cancel_booking`, `reschedule_booking`; `book_slot` переписан на синхронную запись в Mesto (вариант C). `BookingSyncService` (`findOpenSlot`/`findClientAppointment`) + `datetime.util`. Sync-колонки `Booking` (`mestoAppointmentId/mestoClientId/syncStatus/syncedAt`, `prisma generate`). Сборка `tsc` зелёная; e2e веба 19/19 на боевой Neon. Доки: `docs/CONNECTING_TO_MESTO.md`, `docs/MESTO_INTEGRATION.md`. Осталось: `prisma migrate` на БД бота + runtime-прогон Telegram→Mesto.
 
 Все Phase 0-9 выполнены 2026-05-26 (см. `docs/PROMPT_PLAN.md` для детального плана):
 

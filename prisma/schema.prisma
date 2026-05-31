@@ -71,12 +71,24 @@ model Booking {
   botId           String
   conversationId  String?
   service         String?
+  /// Имя мастера/исполнителя (FSM-слот master).
+  master          String?
   date            String?
   time            String?
   name            String?
   phone           String?
+  /// Стоимость записи (целое, минимальная единица валюты — напр. тенге); считается по услуге×мастеру.
+  amount          Int?
   /// "confirmed" | "cancelled"
   status          String   @default("confirmed")
+  /// id записи (appointment) в Mesto после синхронизации; null — ещё не синкнули.
+  mestoAppointmentId String?
+  /// id клиента в Mesto.
+  mestoClientId      String?
+  /// Статус синхронизации с Mesto: "pending" | "synced" | "failed".
+  syncStatus         String   @default("pending")
+  /// Когда успешно синхронизировали в Mesto.
+  syncedAt           DateTime?
   createdAt       DateTime @default(now())
 
   @@index([botId, createdAt])

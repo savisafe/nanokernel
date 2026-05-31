@@ -208,6 +208,12 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     ...(businessInfo && Object.keys(businessInfo).length > 0
       ? { businessInfo }
       : {}),
+    ...(v2.notifications && v2.notifications.telegramChatId !== undefined
+      ? { notifications: { telegramChatId: v2.notifications.telegramChatId } }
+      : {}),
+    ...(v2.crm
+      ? { crm: { provider: v2.crm.provider, baseUrl: v2.crm.baseUrl.replace(/\/+$/, ""), apiKeyEnv: v2.crm.apiKeyEnv } }
+      : {}),
   };
 }
 

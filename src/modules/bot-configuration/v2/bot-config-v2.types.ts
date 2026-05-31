@@ -223,6 +223,41 @@ const scriptSpecSchema = z.object({
   onMaxAttempts: z.string().min(1).optional(),
 });
 
+const notificationsSchema = z.object({
+  /**
+   * Telegram chat id служебного чата (админ/мастера) для уведомлений о событиях —
+   * напр. о новой записи. Если не задан — уведомления не отправляются.
+   */
+  telegramChatId: z.number().int().optional(),
+});
+
+/**
+ * Региональные настройки бизнеса. Не фиксируемся на Казахстане/тенге в коде —
+ * валюта, часовой пояс и локаль форматирования задаются здесь per-business.
+ */
+const regionSchema = z.object({
+  /** ISO 3166-1 alpha-2 («KZ», «RU», «US»). Дефолтная страна для нормализации телефона в E.164. */
+  country: z.string().length(2).optional(),
+  /** IANA tz («Asia/Almaty», «Europe/Moscow»). Используется при синхронизации записей во внешние CRM. */
+  timezone: z.string().min(1).optional(),
+  /** ISO-4217 («KZT», «RUB», «USD»). Валюта суммы записи (`Booking.amount`). */
+  currency: z.string().length(3).optional(),
+  /** BCP-47 («ru-RU», «ru-KZ») для форматирования чисел/денег. По умолчанию — `ru-RU`. */
+  locale: z.string().min(2).optional(),
+});
+
+/**
+ * Интеграция с CRM Mesto. Сам ключ в JSON НЕ хранится — только имя env-переменной
+ * (как `channel.telegram.tokenEnv`). Ключ per-business, бизнес определяется ключом.
+ */
+const crmSchema = z.object({
+  provider: z.literal("mesto"),
+  /** Базовый URL Mesto без хвостового слеша, напр. https://mesto.example.com. */
+  baseUrl: z.string().url(),
+  /** Имя env-переменной с API-ключом (`mst_live_...`). */
+  apiKeyEnv: z.string().min(1),
+});
+
 export const botConfigV2Schema = z.object({
   schemaVersion: z.literal(2),
   id: z.string().min(1).optional(),
@@ -245,9 +280,14 @@ export const botConfigV2Schema = z.object({
   businessInfo: businessInfoSchema.optional(),
   /** Привязка к каналам: tokenEnv + webhookSecret per channel. */
   channel: channelSchema.optional(),
+  /** Служебные уведомления (напр. о новой записи в служебный Telegram-чат). */
+  notifications: notificationsSchema.optional(),
+  /** Интеграция с CRM Mesto (чтение расписания + запись/отмена/перенос). */
+  crm: crmSchema.optional(),
 });
 
 export type BotConfigV2 = z.infer<typeof botConfigV2Schema>;
+export type CrmSpec = z.infer<typeof crmSchema>;
 export type SnippetSpecV2 = z.infer<typeof snippetSpecSchema>;
 export type ScriptSpec = z.infer<typeof scriptSpecSchema>;
 export type SlotSpec = z.infer<typeof slotSpecSchema>;
