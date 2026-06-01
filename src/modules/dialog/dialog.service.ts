@@ -230,7 +230,11 @@ export class DialogService {
       return { replyText: fsmOutcome.reply, stage: conversation.stage };
     }
 
-    const snippetHit = this.snippetMatcher.match(input.text, snap.bot);
+    // Идёт запись (conversational-сценарий уступил ход): ведём диалог через LLM с контекстом
+    // записи (что собрано / что нужно / реальные окна календаря). Сниппеты не перехватывают —
+    // на вопросы клиента отвечает сам LLM по контексту, как живой менеджер.
+    const bookingNote = fsmOutcome.llmNote;
+    const snippetHit = bookingNote ? undefined : this.snippetMatcher.match(input.text, snap.bot);
     if (snippetHit) {
       if (isDevelopment()) {
         this.logger.debug(`snippet hit bot=${snap.bot.id} id=${snippetHit.id} (no LLM call)`);
@@ -260,6 +264,7 @@ export class DialogService {
       input.text,
       snap,
       progress?.onLlmTextDelta,
+      bookingNote,
     );
     const safeOut = this.safetyOut.apply(llmReply.replyText, snap.bot);
     const replyText = safeOut.text;
@@ -369,6 +374,7 @@ export class DialogService {
     userText: string,
     snap: DialogRuntimeSnapshot,
     onTextDelta?: (text: string) => void | Promise<void>,
+    llmNote?: string,
   ): Promise<{ replyText: string; degraded: boolean }> {
     const r = await this.tryLlmReplyCore(
       conversationId,
@@ -378,6 +384,7 @@ export class DialogService {
       userText,
       snap,
       onTextDelta,
+      llmNote,
     );
     return { replyText: r.replyText, degraded: r.degraded };
   }
@@ -401,6 +408,7 @@ export class DialogService {
     userText: string,
     snap: DialogRuntimeSnapshot,
     onTextDelta?: (text: string) => void | Promise<void>,
+    llmNote?: string,
   ): Promise<{
     replyText: string;
     degraded: boolean;
@@ -439,7 +447,9 @@ export class DialogService {
     const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
     const knowledgeContext = retrieval.context;
 
-    const system = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
+    const systemBase = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
+    // Инжект контекста записи (собрано/нужно/реальные окна) — чтобы LLM вёл как менеджер.
+    const system = llmNote ? `${systemBase}\n\n${llmNote}` : systemBase;
     const messages: LlmChatMessage[] = [
       { role: "system", content: system },
       ...contextRows.map((m) => ({

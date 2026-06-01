@@ -5,6 +5,7 @@ import { SkillsRegistry } from "../skills/skills-registry.service";
 import { interpolateTemplate } from "../dialog/dialog-template.utils";
 import type { ScriptSpec, SlotSpec } from "../bot-configuration/v2/bot-config-v2.types";
 import {
+  SCRIPT_STATE_COLLECTING,
   SCRIPT_STATE_CONFIRM,
   SCRIPT_STATE_SLOT_PREFIX,
   ScriptSlots,
@@ -56,6 +57,11 @@ export class ScriptRunnerService {
         await this.clearState(conversation.id);
         return { handled: false };
       }
+      // Conversational-режим (скрипт с `extraction`): копим слоты и уступаем ход LLM,
+      // пока не собрано всё для записи. Линейный FSM — только для скриптов без extraction.
+      if (def.extraction) {
+        return this.conversationalStep(conversation, bot.id, conversation.activeScript, def, userText);
+      }
       return this.continueActive(conversation, bot.id, conversation.activeScript, def, userText);
     }
 
@@ -66,7 +72,7 @@ export class ScriptRunnerService {
       if (!def.extraction) continue;
       const ex = await this.extractor.extract(def, userText);
       if (ex?.intentMatch) {
-        return this.activate(conversation, scriptName, def, userText, ex.slots);
+        return this.conversationalStart(conversation, bot.id, scriptName, def, ex.slots);
       }
     }
 
@@ -202,6 +208,199 @@ export class ScriptRunnerService {
       if (spec && this.slotValueValid(name, slotName, spec.validate, v)) {
         out[slotName] = v;
       }
+    }
+    return out;
+  }
+
+  // ===== Conversational-режим (скрипты с блоком `extraction`) =====
+  // Пока слотов для записи не хватает — копим извлечённое и уступаем ход LLM (он отвечает
+  // гибко: на вопросы, не-меню, мягко ведёт к недостающему). Когда всё собрано →
+  // детерминированное подтверждение → onConfirm.skill (book_slot → CRM).
+
+  /** Старт: первая реплика с booking-намерением. */
+  private async conversationalStart(
+    conversation: ScriptStepInput["conversation"],
+    botId: string,
+    name: string,
+    def: ScriptSpec,
+    exSlots: ScriptSlots,
+  ): Promise<ScriptStepOutcome> {
+    return this.decideBooking(conversation, botId, name, def, this.validForSlots(name, def, exSlots));
+  }
+
+  /** Очередная реплика в активной записи. */
+  private async conversationalStep(
+    conversation: ScriptStepInput["conversation"],
+    botId: string,
+    name: string,
+    def: ScriptSpec,
+    userText: string,
+  ): Promise<ScriptStepOutcome> {
+    if (ScriptRunnerService.CANCEL_RE.test(userText)) {
+      await this.clearState(conversation.id);
+      return { handled: true, reply: def.onCancel, terminal: true, scriptName: name };
+    }
+    // Контекст последней реплики бота — чтобы короткие ответы («Савелий», «15:00») легли в нужный слот.
+    const lastBot = await this.prisma.message.findFirst({
+      where: { conversationId: conversation.id, role: "assistant" },
+      orderBy: { createdAt: "desc" },
+    });
+    const ex = await this.extractor.extract(def, userText, lastBot?.text?.slice(0, 200));
+    const merged: ScriptSlots = {
+      ...this.readSlots(conversation.activeScriptSlots),
+      ...this.validForSlots(name, def, ex?.slots ?? {}),
+    };
+
+    if (conversation.activeScriptState === SCRIPT_STATE_CONFIRM) {
+      if (ScriptRunnerService.YES_RE.test(userText)) {
+        return this.bookConfirmed(conversation, botId, name, def, merged);
+      }
+      if (ScriptRunnerService.NO_RE.test(userText)) {
+        await this.saveBookingState(conversation.id, name, SCRIPT_STATE_COLLECTING, merged);
+        return {
+          handled: false,
+          llmNote:
+            "[Запись] Клиент сказал, что-то не так — спроси по-человечески, что именно изменить (день, время, услугу или мастера).",
+        };
+      }
+      // Не «да/нет» в подтверждении — возможно, поправил слот; пересчитываем ниже.
+    }
+    return this.decideBooking(conversation, botId, name, def, merged);
+  }
+
+  /**
+   * Решает ход: всё собрано → просим LLM подтвердить запись своими словами; иначе копим.
+   * В ОБОИХ случаях ход у LLM с контекстом (что собрано / что нужно / реальные окна
+   * календаря) — бот ведёт диалог как менеджер, без шаблонных фраз.
+   */
+  private async decideBooking(
+    conversation: ScriptStepInput["conversation"],
+    botId: string,
+    name: string,
+    def: ScriptSpec,
+    merged: ScriptSlots,
+  ): Promise<ScriptStepOutcome> {
+    const required = def.order.filter((s) => !def.slots[s]?.optional);
+    const missing = required.filter((s) => !merged[s]);
+    const avail = await this.availabilityNote(botId, def, merged);
+    const known = def.order
+      .filter((s) => merged[s])
+      .map((s) => `${s}=${merged[s]}`)
+      .join(", ");
+
+    if (missing.length === 0) {
+      const display: ScriptSlots = { ...merged };
+      for (const s of def.order) if (!display[s]) display[s] = "любой";
+      await this.saveBookingState(conversation.id, name, SCRIPT_STATE_CONFIRM, display);
+      return {
+        handled: false,
+        llmNote:
+          "[Идёт запись клиента — веди как живой менеджер, своими словами, без шаблонных фраз.]\n" +
+          `Все данные собраны: ${known}.\n${avail}` +
+          "Кратко повтори клиенту детали записи человеческим языком и спроси, всё ли верно (да/нет). Ничего не выдумывай.",
+      };
+    }
+
+    await this.saveBookingState(conversation.id, name, SCRIPT_STATE_COLLECTING, merged);
+    return {
+      handled: false,
+      llmNote:
+        "[Идёт запись клиента — веди как живой менеджер по контексту, без шаблонных фраз и без дословного повтора вопроса.]\n" +
+        (known ? `Уже известно: ${known}.\n` : "") +
+        `Ещё нужно узнать у клиента: ${missing.join(", ")}.\n${avail}` +
+        "Ответь на вопросы клиента, если есть, и естественно уточни недостающее (по 1–2 за раз). Свободное время предлагай ТОЛЬКО из окон выше — не выдумывай.",
+    };
+  }
+
+  /** Дёргает calendar-skill (если задан и известен день) → строка с РЕАЛЬНЫМИ окнами для LLM. */
+  private async availabilityNote(
+    botId: string,
+    def: ScriptSpec,
+    merged: ScriptSlots,
+  ): Promise<string> {
+    if (!def.availabilitySkill || !merged.date) return "";
+    const skill = this.skills.get(def.availabilitySkill);
+    if (!skill) return "";
+    try {
+      const res = await skill.execute(
+        { service: merged.service, master: merged.master, date: merged.date },
+        { botId },
+      );
+      const data = res.data as
+        | { days?: Array<{ status?: string; times?: string[]; closedReason?: string }> }
+        | undefined;
+      const day = data?.days?.[0];
+      if (!day) return "";
+      if (day.status !== "open") {
+        return `На «${merged.date}» приёма нет (${day.closedReason ?? "выходной"}) — предложи другой день.\n`;
+      }
+      const times = day.times ?? [];
+      if (times.length === 0) return `На «${merged.date}» свободных окон нет — предложи другой день.\n`;
+      const who = merged.master && merged.master !== "любой" ? ` (мастер ${merged.master})` : "";
+      return `Свободные окна на «${merged.date}»${who}: ${times.join(", ")}.\n`;
+    } catch {
+      return "";
+    }
+  }
+
+  /** Подтверждение получено — дёргаем skill записи (book_slot → CRM). */
+  private async bookConfirmed(
+    conversation: ScriptStepInput["conversation"],
+    botId: string,
+    name: string,
+    def: ScriptSpec,
+    merged: ScriptSlots,
+  ): Promise<ScriptStepOutcome> {
+    const skill = this.skills.get(def.onConfirm.skill);
+    let success = false;
+    if (!skill) {
+      this.logger.warn(`Script "${name}" onConfirm.skill="${def.onConfirm.skill}" not found.`);
+    } else {
+      try {
+        const result = await skill.execute(merged, { botId, conversationId: conversation.id });
+        const data = result.data as { ok?: boolean } | undefined;
+        success = data?.ok !== false;
+      } catch (e) {
+        this.logger.warn(
+          `Script "${name}" onConfirm.skill="${def.onConfirm.skill}" threw: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    await this.clearState(conversation.id);
+    return {
+      handled: true,
+      reply: interpolateTemplate(
+        success ? def.onConfirm.successReply : def.onConfirm.errorReply,
+        merged,
+      ),
+      terminal: true,
+      scriptName: name,
+    };
+  }
+
+  private async saveBookingState(
+    conversationId: string,
+    name: string,
+    state: string,
+    slots: ScriptSlots,
+  ): Promise<void> {
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        activeScript: name,
+        activeScriptState: state,
+        activeScriptSlots: slots as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  /** Оставляет только извлечённые значения, валидные для своих слотов (страховка от мусора). */
+  private validForSlots(name: string, def: ScriptSpec, slots: ScriptSlots): ScriptSlots {
+    const out: ScriptSlots = {};
+    for (const [k, v] of Object.entries(slots)) {
+      if (!v) continue;
+      const spec = def.slots[k];
+      if (spec && this.slotValueValid(name, k, spec.validate, v)) out[k] = v;
     }
     return out;
   }

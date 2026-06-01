@@ -188,6 +188,8 @@ const slotSpecSchema = z.object({
    * совпадение целиком. Извлечённое значение всё равно проходит `validate`.
    */
   extract: z.string().optional(),
+  /** true — слот необязателен (в conversational-режиме не входит в required для записи). */
+  optional: z.boolean().optional(),
 });
 
 const scriptSpecSchema = z.object({
@@ -223,6 +225,12 @@ const scriptSpecSchema = z.object({
    * Если не задан — FSM просто завершается без спец-сообщения.
    */
   onMaxAttempts: z.string().min(1).optional(),
+  /**
+   * Опционально (conversational-режим): имя skill для проверки расписания (calendar).
+   * Движок зовёт его, когда известен день, и отдаёт LLM РЕАЛЬНЫЕ свободные окна —
+   * чтобы бот отвечал корректно («есть 10:00, 12:00»), а не выдумывал.
+   */
+  availabilitySkill: z.string().min(1).optional(),
   /**
    * Опционально: LLM-извлечение намерения и слотов из СВОБОДНОЙ речи (вместо хрупких
    * regex-триггеров и regex-валидации). Доменно-нейтральный движок строит промпт из

@@ -29,7 +29,11 @@ export class SlotExtractorService {
 
   constructor(private readonly llm: LlmService) {}
 
-  async extract(scriptSpec: ScriptSpec, message: string): Promise<ScriptExtraction | null> {
+  async extract(
+    scriptSpec: ScriptSpec,
+    message: string,
+    context?: string,
+  ): Promise<ScriptExtraction | null> {
     const ex = scriptSpec.extraction;
     if (!ex || !this.llm.isEnabled()) return null;
     const text = message?.trim();
@@ -47,6 +51,9 @@ export class SlotExtractorService {
       "Ты извлекаешь данные из сообщения клиента для сценария. " +
       `intentMatch=true, если клиент хочет: ${ex.intent}; иначе false.\n` +
       `Извлеки поля (значение или null, если клиент его не назвал). Заполняй КАЖДОЕ поле, упомянутое в сообщении, — одна фраза может содержать несколько полей сразу (напр. «<день> в <время>» → и день, и время):\n${fieldLines}\n` +
+      (context
+        ? `Предыдущая реплика бота (контекст для коротких ответов): «${context}». Короткий ответ клиента, скорее всего, относится к ней (бот спросил имя → ответ это name; спросил день → date; время → time).\n`
+        : "") +
       `Ответь СТРОГО JSON одной строкой, без пояснений и текста вокруг:\n${shape}\n` +
       `Если сообщение НЕ относится к сценарию — верни ровно: ${noMatch}\nТолько JSON, ничего больше.`;
 

@@ -10,7 +10,15 @@ export interface ScriptStepInput {
 }
 
 export type ScriptStepOutcome =
-  | { handled: false }
+  | {
+      handled: false;
+      /**
+       * Conversational-режим: ход уступаем LLM, но даём ему контекст записи
+       * (что собрано / что нужно / реальные окна календаря) — чтобы он вёл диалог
+       * как менеджер, а не по шаблону. dialog инжектит это в system-промпт.
+       */
+      llmNote?: string;
+    }
   | {
       handled: true;
       reply: string;
@@ -23,3 +31,5 @@ export type ScriptStepOutcome =
 /** Префиксы состояний FSM. */
 export const SCRIPT_STATE_SLOT_PREFIX = "slot:";
 export const SCRIPT_STATE_CONFIRM = "confirm";
+/** Conversational-режим: копим слоты, ход уступаем LLM, пока не собрано всё для записи. */
+export const SCRIPT_STATE_COLLECTING = "collecting";
