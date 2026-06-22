@@ -48,7 +48,10 @@ export class PromptProfileService implements OnModuleInit {
     }
   }
 
-  resolveFromPromptProfileJson(profileId: string, raw: PromptProfileFileJson): ResolvedLlmPromptProfile {
+  resolveFromPromptProfileJson(
+    profileId: string,
+    raw: PromptProfileFileJson,
+  ): ResolvedLlmPromptProfile {
     const topic = typeof raw.topic === "string" ? raw.topic.trim() : undefined;
     const forbiddenTopics = Array.isArray(raw.forbiddenTopics)
       ? raw.forbiddenTopics.map((s) => String(s).trim()).filter(Boolean)
@@ -67,7 +70,9 @@ export class PromptProfileService implements OnModuleInit {
         ? raw.companyName.trim()
         : "компании";
     const persona =
-      typeof raw.persona === "string" && raw.persona.trim().length > 0 ? raw.persona.trim() : undefined;
+      typeof raw.persona === "string" && raw.persona.trim().length > 0
+        ? raw.persona.trim()
+        : undefined;
     const language =
       typeof raw.language === "string" && raw.language.trim().length > 0
         ? raw.language.trim()
@@ -88,8 +93,7 @@ export class PromptProfileService implements OnModuleInit {
 
     const rawOpen = raw.openTopicsMode;
     const openTopicsMode =
-      rawOpen === true ||
-      (typeof rawOpen === "string" && rawOpen.trim().toLowerCase() === "true");
+      rawOpen === true || (typeof rawOpen === "string" && rawOpen.trim().toLowerCase() === "true");
     const rawStrict = raw.strictKnowledgeMode;
     const strictKnowledgeMode =
       rawStrict === true ||
@@ -131,7 +135,8 @@ export class PromptProfileService implements OnModuleInit {
       } else {
         const maxRaw = rawBypass.maxMessageLength;
         const maxMessageLength =
-          this.parseIntInRange(maxRaw, 20, 2000) ?? DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_MAX_LENGTH;
+          this.parseIntInRange(maxRaw, 20, 2000) ??
+          DEFAULT_STRICT_KNOWLEDGE_CONVERSATIONAL_MAX_LENGTH;
         const patternsKey = rawBypass.patterns;
         if (patternsKey === undefined) {
           strictKnowledgeConversationalBypass = {

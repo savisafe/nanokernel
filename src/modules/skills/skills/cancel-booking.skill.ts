@@ -40,11 +40,19 @@ export class CancelBookingSkill implements Skill {
     const found = await this.sync.findClientAppointment(ctx.botId, ctx.conversationId, phone);
     if (!found) {
       return {
-        data: { ok: false, error: "not_found", note: "Не нашла активную запись — уточните телефон." },
+        data: {
+          ok: false,
+          error: "not_found",
+          note: "Не нашла активную запись — уточните телефон.",
+        },
       };
     }
 
-    const res = await this.mesto.cancelBooking(ctx.botId, found.mestoAppointmentId, "client_cancelled");
+    const res = await this.mesto.cancelBooking(
+      ctx.botId,
+      found.mestoAppointmentId,
+      "client_cancelled",
+    );
     if (res.status === 200) {
       if (found.bookingId) {
         await this.prisma.booking.update({

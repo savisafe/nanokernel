@@ -1,7 +1,7 @@
 node_modules/
 dist/
 example-chats
-knowledge-base
+config/b1
 .idea
 .env
 .env.local
@@ -9,3 +9,14 @@ knowledge-base
 coverage/
 *.log
 *.tsbuildinfo
+
+# --- Published kernel hygiene: keep only the engine in the public repo ---
+# Internal docs & notes are private by default — only the public-facing set below
+# is published (these contain no user/business data).
+*.md
+!/README.md
+!/CONTRIBUTING.md
+!/SECURITY.md
+!/CODE_OF_CONDUCT.md
+!/CHANGELOG.md
+!/.github/**/*.md

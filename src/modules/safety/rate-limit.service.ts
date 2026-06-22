@@ -21,11 +21,7 @@ export class RateLimitService implements OnModuleDestroy {
   private connection: IORedis | undefined;
   private warnedDegraded = false;
 
-  async check(
-    key: string,
-    maxRequests: number,
-    windowSeconds: number,
-  ): Promise<RateLimitResult> {
+  async check(key: string, maxRequests: number, windowSeconds: number): Promise<RateLimitResult> {
     const redis = this.ensureConnection();
     if (!redis) {
       this.warnDegraded("no redis configured");

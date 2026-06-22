@@ -1,8 +1,5 @@
 import type { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
-import type {
-  DialogConfigFileJson,
-  EffectiveDialogRuntime,
-} from "./dialog.config.types";
+import type { DialogConfigFileJson, EffectiveDialogRuntime } from "./dialog.config.types";
 import { DIALOG_SUBSYSTEM_DEFAULTS } from "./dialog-effective.defaults";
 
 const DEFAULT_STAGE_FRAME = {
@@ -21,9 +18,7 @@ export function resolveEffectiveDialog(bot: ResolvedBotConfiguration): Effective
   }
 
   if (!raw.systemPrompt?.template || typeof raw.systemPrompt.template !== "string") {
-    throw new Error(
-      `dialog.systemPrompt.template is required (bot="${bot.id}").`,
-    );
+    throw new Error(`dialog.systemPrompt.template is required (bot="${bot.id}").`);
   }
 
   const base = structuredClone(DIALOG_SUBSYSTEM_DEFAULTS);

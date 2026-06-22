@@ -1,10 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
-import {
-  CompiledSnippet,
-  SnippetHit,
-  SnippetSpec,
-} from "./snippet.types";
+import { CompiledSnippet, SnippetHit, SnippetSpec } from "./snippet.types";
 
 @Injectable()
 export class SnippetMatcherService {
@@ -47,7 +43,9 @@ export class SnippetMatcherService {
 
   private compileSpec(spec: SnippetSpec, botId: string): CompiledSnippet | null {
     if (!spec.id || !spec.reply || !Array.isArray(spec.match) || spec.match.length === 0) {
-      this.logger.warn(`Snippet skipped (bot=${botId}, id=${spec.id ?? "?"}): missing id/reply/match`);
+      this.logger.warn(
+        `Snippet skipped (bot=${botId}, id=${spec.id ?? "?"}): missing id/reply/match`,
+      );
       return null;
     }
     switch (spec.mode) {
@@ -105,7 +103,9 @@ export class SnippetMatcherService {
         };
       }
       default: {
-        this.logger.warn(`Snippet skipped (bot=${botId}, id=${spec.id}): unknown mode "${spec.mode}"`);
+        this.logger.warn(
+          `Snippet skipped (bot=${botId}, id=${spec.id}): unknown mode "${spec.mode}"`,
+        );
         return null;
       }
     }

@@ -4,6 +4,10 @@ import * as sqliteVec from "sqlite-vec";
 import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
 import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
 
+// better-sqlite3 is a CommonJS native module (module.exports = Database). With
+// esModuleInterop disabled, a default import would resolve to undefined at runtime,
+// so a require() is the correct interop here.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const Database = require("better-sqlite3");
 
 interface VectorChunk {
@@ -34,11 +38,11 @@ export class RagService implements OnModuleInit {
 
     try {
       this.logger.log("Initializing RAG service...");
-      
+
       // Инициализация SQLite с расширением vec
       this.db = new Database(":memory:");
       sqliteVec.load(this.db);
-      
+
       // Создание таблицы для векторов
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING vec0(
@@ -50,10 +54,7 @@ export class RagService implements OnModuleInit {
 
       // Загрузка модели эмбеддингов
       const { pipeline } = await import("@xenova/transformers");
-      this.embeddingPipeline = await pipeline(
-        "feature-extraction",
-        "Xenova/all-MiniLM-L6-v2",
-      );
+      this.embeddingPipeline = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
 
       // Индексация базы знаний
       await this.indexKnowledgeBase();
@@ -61,7 +62,9 @@ export class RagService implements OnModuleInit {
       this.isReady = true;
       this.logger.log(`RAG service initialized with ${this.chunks.length} chunks`);
     } catch (error) {
-      this.logger.error(`Failed to initialize RAG: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `Failed to initialize RAG: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -90,7 +93,11 @@ export class RagService implements OnModuleInit {
     }
   }
 
-  private buildChunks(text: string, chunkSize: number, overlap: number): Array<{ id: number; text: string }> {
+  private buildChunks(
+    text: string,
+    chunkSize: number,
+    overlap: number,
+  ): Array<{ id: number; text: string }> {
     const normalized = text.replace(/\r\n/g, "\n").trim();
     if (!normalized) return [];
 
@@ -102,12 +109,12 @@ export class RagService implements OnModuleInit {
       const end = Math.min(normalized.length, start + chunkSize);
       const cut = this.findBoundary(normalized, start, end);
       const chunkText = normalized.slice(start, cut).trim();
-      
+
       if (chunkText.length > 0) {
         chunks.push({ id, text: chunkText });
         id += 1;
       }
-      
+
       if (cut >= normalized.length) break;
       start = Math.max(cut - overlap, start + 1);
     }
@@ -117,7 +124,7 @@ export class RagService implements OnModuleInit {
 
   private findBoundary(text: string, start: number, targetEnd: number): number {
     if (targetEnd >= text.length) return text.length;
-    
+
     const breakpoints = ["\n\n", "\n", ". ", "; ", ", "];
     for (const point of breakpoints) {
       const idx = text.lastIndexOf(point, targetEnd);
@@ -147,7 +154,7 @@ export class RagService implements OnModuleInit {
     }
 
     const queryVector = await this.embed(query);
-    
+
     // Поиск через sqlite-vec
     const stmt = this.db.prepare(`
       SELECT text, distance
@@ -157,8 +164,11 @@ export class RagService implements OnModuleInit {
       LIMIT ?
     `);
 
-    const rows = stmt.all(new Uint8Array(new Float32Array(queryVector).buffer), topK) as Array<{ text: string; distance: number }>;
-    
+    const rows = stmt.all(new Uint8Array(new Float32Array(queryVector).buffer), topK) as Array<{
+      text: string;
+      distance: number;
+    }>;
+
     // distance = 1 - cosine_similarity
     return rows.map((row) => ({
       text: row.text,

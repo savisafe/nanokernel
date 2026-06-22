@@ -82,7 +82,12 @@ export class CheckAvailabilitySkill implements Skill {
     });
 
     if (res.status === 0) {
-      return { data: { error: "crm_unreachable", note: "Расписание сейчас недоступно — уточню у мастера." } };
+      return {
+        data: {
+          error: "crm_unreachable",
+          note: "Расписание сейчас недоступно — уточню у мастера.",
+        },
+      };
     }
     if (res.status !== 200 || !res.body) {
       return { data: { error: `http_${res.status}` } };
@@ -94,9 +99,7 @@ export class CheckAvailabilitySkill implements Skill {
       ...(d.closed_reason ? { closedReason: d.closed_reason } : {}),
       // HH:MM в зоне бизнеса (slot.starts_at уже с offset бизнеса).
       times:
-        d.status === "open"
-          ? uniq(d.slots.map((s) => s.starts_at.slice(11, 16))).slice(0, 16)
-          : [],
+        d.status === "open" ? uniq(d.slots.map((s) => s.starts_at.slice(11, 16))).slice(0, 16) : [],
     }));
 
     return {

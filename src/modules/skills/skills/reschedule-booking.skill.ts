@@ -46,7 +46,11 @@ export class RescheduleBookingSkill implements Skill {
     const found = await this.sync.findClientAppointment(ctx.botId, ctx.conversationId, phone);
     if (!found) {
       return {
-        data: { ok: false, error: "not_found", note: "Не нашла активную запись — уточните телефон." },
+        data: {
+          ok: false,
+          error: "not_found",
+          note: "Не нашла активную запись — уточните телефон.",
+        },
       };
     }
 
@@ -65,7 +69,9 @@ export class RescheduleBookingSkill implements Skill {
     });
     if (!startsAt) return { data: { ok: false, error: "time_unavailable" } };
 
-    const res = await this.mesto.patchBooking(ctx.botId, found.mestoAppointmentId, { starts_at: startsAt });
+    const res = await this.mesto.patchBooking(ctx.botId, found.mestoAppointmentId, {
+      starts_at: startsAt,
+    });
     if (res.status === 200) {
       if (found.bookingId) {
         await this.prisma.booking.update({
@@ -73,7 +79,9 @@ export class RescheduleBookingSkill implements Skill {
           data: { date, ...(time ? { time } : {}) },
         });
       }
-      this.logger.log(`Rescheduled bot=${ctx.botId} appt=${found.mestoAppointmentId} → ${startsAt}`);
+      this.logger.log(
+        `Rescheduled bot=${ctx.botId} appt=${found.mestoAppointmentId} → ${startsAt}`,
+      );
       return { data: { ok: true, rescheduled: true } };
     }
     if (res.status === 422 || res.status === 409) {

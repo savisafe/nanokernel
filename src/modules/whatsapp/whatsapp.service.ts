@@ -5,10 +5,7 @@ import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
 import { DialogService } from "../dialog/dialog.service";
 import { IdempotencyService } from "../idempotency/idempotency.service";
 import { isDevelopment } from "../shared/is-development";
-import {
-  IncomingWhatsAppMessage,
-  WhatsAppWebhookPayload,
-} from "./whatsapp.types";
+import { IncomingWhatsAppMessage, WhatsAppWebhookPayload } from "./whatsapp.types";
 
 @Injectable()
 export class WhatsAppService {
@@ -99,8 +96,7 @@ export class WhatsAppService {
       }
 
       const dev = isDevelopment();
-      const preview =
-        message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text;
+      const preview = message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text;
       const flowStarted = dev ? performance.now() : 0;
       if (dev) {
         this.logger.log(

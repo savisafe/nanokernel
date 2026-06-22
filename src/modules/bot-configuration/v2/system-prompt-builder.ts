@@ -38,10 +38,7 @@ export function buildSystemPromptFromV2(v2: BotConfigV2): string {
 
   const refuse = v2.guardrails?.refuseTopics ?? [];
   if (refuse.length > 0) {
-    lines.push(
-      "",
-      "Эти темы вне твоей роли — вежливо откажи и верни к делу:",
-    );
+    lines.push("", "Эти темы вне твоей роли — вежливо откажи и верни к делу:");
     for (const t of refuse) {
       lines.push(`- ${t}`);
     }
@@ -68,7 +65,15 @@ export function buildSystemPromptFromV2(v2: BotConfigV2): string {
   // Бизнес-факты: адрес/телефон/мастера/услуги. Уходят в промпт целиком, чтобы LLM
   // не изобретал значения и мог точно отвечать на вопросы «адрес?», «цена?», «кто у вас работает?».
   const bi = v2.businessInfo;
-  if (bi && (bi.address || bi.phone || bi.onlineBookingUrl || bi.workingHours || bi.masters?.length || bi.services?.length)) {
+  if (
+    bi &&
+    (bi.address ||
+      bi.phone ||
+      bi.onlineBookingUrl ||
+      bi.workingHours ||
+      bi.masters?.length ||
+      bi.services?.length)
+  ) {
     lines.push("", `Факты ${v2.name} (используй ТОЛЬКО эти значения, никаких других):`);
     if (bi.address) lines.push(`- Адрес: ${bi.address}`);
     if (bi.phone) lines.push(`- Телефон: ${bi.phone}`);

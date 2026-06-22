@@ -5,7 +5,7 @@ import { CatalogService, findServices, valueForMaster } from "../service-catalog
 
 /**
  * lookup_service — поиск услуги салона по ключевым словам/категории.
- * Данные: `config/businesses/<id>/data/services.json` (массив CatalogService).
+ * Данные: `config/<id>/data/services.json` (массив CatalogService).
  */
 @Injectable()
 export class LookupServiceSkill implements Skill {

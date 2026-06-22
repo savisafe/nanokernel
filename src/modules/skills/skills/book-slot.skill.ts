@@ -26,7 +26,8 @@ export class BookSlotSkill implements Skill {
   private readonly logger = new Logger(BookSlotSkill.name);
 
   readonly name = "book_slot";
-  readonly description = "Создать запись клиента после подтверждения. Используется FSM-скриптом, не LLM.";
+  readonly description =
+    "Создать запись клиента после подтверждения. Используется FSM-скриптом, не LLM.";
   /** FSM-only: вызывается script-runner'ом на подтверждении, НЕ отдаётся LLM как tool. */
   readonly fsmOnly = true;
   readonly parameters = {
@@ -66,7 +67,18 @@ export class BookSlotSkill implements Skill {
     let booking;
     try {
       booking = await this.prisma.booking.create({
-        data: { botId: ctx.botId, conversationId: ctx.conversationId, service, master, date, time, name, phone, amount, status: "confirmed" },
+        data: {
+          botId: ctx.botId,
+          conversationId: ctx.conversationId,
+          service,
+          master,
+          date,
+          time,
+          name,
+          phone,
+          amount,
+          status: "confirmed",
+        },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -79,7 +91,17 @@ export class BookSlotSkill implements Skill {
     // CRM не настроена — прежнее поведение (локальная запись + уведомление).
     if (!this.mesto.isConfigured(ctx.botId)) {
       await this.notifier.notifyNewBooking(ctx.botId, notice);
-      return { data: this.okData(booking.id, { service: serviceName, master, date, time, name, phone, amount }) };
+      return {
+        data: this.okData(booking.id, {
+          service: serviceName,
+          master,
+          date,
+          time,
+          name,
+          phone,
+          amount,
+        }),
+      };
     }
 
     // Резолвим реальный слот.
@@ -120,22 +142,50 @@ export class BookSlotSkill implements Skill {
         },
       });
       await this.notifier.notifyNewBooking(ctx.botId, notice);
-      this.logger.log(`Booking synced bot=${ctx.botId} id=${booking.id} → appt=${body.appointment_id}`);
-      return { data: this.okData(booking.id, { service: serviceName, master, date, time, name, phone, amount, appointmentId: body.appointment_id }) };
+      this.logger.log(
+        `Booking synced bot=${ctx.botId} id=${booking.id} → appt=${body.appointment_id}`,
+      );
+      return {
+        data: this.okData(booking.id, {
+          service: serviceName,
+          master,
+          date,
+          time,
+          name,
+          phone,
+          amount,
+          appointmentId: body.appointment_id,
+        }),
+      };
     }
 
     // Закрытая дата / вне часов / занято → клиенту скажем «недоступно» (errorReply).
     if (res.status === 422 || res.status === 409) {
       await this.markSync(booking.id, "failed");
-      this.logger.log(`Mesto rejected booking bot=${ctx.botId} id=${booking.id}: ${res.status} ${body.code ?? ""}`);
+      this.logger.log(
+        `Mesto rejected booking bot=${ctx.botId} id=${booking.id}: ${res.status} ${body.code ?? ""}`,
+      );
       return { data: { ok: false, error: body.code ?? `http_${res.status}` } };
     }
 
     // 5xx / сеть: не теряем запись — оставляем локально и алертим студию.
     await this.markSync(booking.id, "failed");
     await this.notifier.notifyNewBooking(ctx.botId, notice);
-    this.logger.warn(`Mesto unreachable bot=${ctx.botId} id=${booking.id} (status=${res.status}) — fail-open + alert.`);
-    return { data: this.okData(booking.id, { service: serviceName, master, date, time, name, phone, amount, degraded: true }) };
+    this.logger.warn(
+      `Mesto unreachable bot=${ctx.botId} id=${booking.id} (status=${res.status}) — fail-open + alert.`,
+    );
+    return {
+      data: this.okData(booking.id, {
+        service: serviceName,
+        master,
+        date,
+        time,
+        name,
+        phone,
+        amount,
+        degraded: true,
+      }),
+    };
   }
 
   private catalog(botId: string, service: string | undefined): CatalogService | undefined {
@@ -149,10 +199,7 @@ export class BookSlotSkill implements Skill {
     await this.prisma.booking.update({ where: { id: bookingId }, data: { syncStatus } });
   }
 
-  private okData(
-    bookingId: string,
-    extra: Record<string, unknown>,
-  ): Record<string, unknown> {
+  private okData(bookingId: string, extra: Record<string, unknown>): Record<string, unknown> {
     return { ok: true, bookingId, ...extra };
   }
 

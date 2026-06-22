@@ -42,10 +42,7 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
       this.logger.warn("Dialog queue worker disabled (DIALOG_QUEUE_WORKER_ENABLED=false)");
       return;
     }
-    const concurrency = Math.max(
-      1,
-      Number(process.env.DIALOG_QUEUE_CONCURRENCY ?? 2),
-    );
+    const concurrency = Math.max(1, Number(process.env.DIALOG_QUEUE_CONCURRENCY ?? 2));
     this.worker = new Worker(
       DIALOG_INBOUND_QUEUE_NAME,
       async (job: Job<DialogInboundJob>) => {

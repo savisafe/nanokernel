@@ -13,12 +13,28 @@ export const addDays = (d: Date, n: number): Date => {
 };
 
 const MONTHS: Record<string, number> = {
-  январ: 1, феврал: 2, март: 3, апрел: 4, ма: 5, июн: 6,
-  июл: 7, август: 8, сентябр: 9, октябр: 10, ноябр: 11, декабр: 12,
+  январ: 1,
+  феврал: 2,
+  март: 3,
+  апрел: 4,
+  ма: 5,
+  июн: 6,
+  июл: 7,
+  август: 8,
+  сентябр: 9,
+  октябр: 10,
+  ноябр: 11,
+  декабр: 12,
 };
 // 0=воскресенье … 6=суббота (как Date.getDay()).
 const WEEKDAYS: Record<string, number> = {
-  воскресень: 0, понедельник: 1, вторник: 2, сред: 3, четверг: 4, пятниц: 5, суббот: 6,
+  воскресень: 0,
+  понедельник: 1,
+  вторник: 2,
+  сред: 3,
+  четверг: 4,
+  пятниц: 5,
+  суббот: 6,
 };
 
 const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").trim();
@@ -40,7 +56,7 @@ export function resolveSingleDate(raw: string, today: Date = new Date()): Date |
     }
   }
 
-  const numeric = lower.match(/^(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?/);
+  const numeric = lower.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?/);
   if (numeric) {
     const day = Number(numeric[1]);
     const month = Number(numeric[2]);
@@ -102,10 +118,7 @@ export function parseTimePreference(raw?: string): TimePref {
  * Точное время — только если оно реально открыто (не сдвигаем молча).
  * Расплывчатое — первый открытый слот не раньше порога. Без предпочтения — самый ранний.
  */
-export function pickSlotStartsAt(
-  slots: { starts_at: string }[],
-  pref: TimePref,
-): string | null {
+export function pickSlotStartsAt(slots: { starts_at: string }[], pref: TimePref): string | null {
   const withMin = slots
     .map((s) => ({ startsAt: s.starts_at, min: hhmmToMin(s.starts_at.slice(11, 16)) }))
     .sort((a, b) => a.min - b.min);

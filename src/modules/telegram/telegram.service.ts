@@ -27,7 +27,9 @@ export class TelegramService {
     private readonly dialogQueueService: DialogQueueService,
   ) {}
 
-  private static messageFromUpdate(payload: TelegramWebhookPayload): TelegramApiMessage | undefined {
+  private static messageFromUpdate(
+    payload: TelegramWebhookPayload,
+  ): TelegramApiMessage | undefined {
     return payload.message ?? payload.channel_post ?? payload.edited_message;
   }
 
@@ -125,8 +127,7 @@ export class TelegramService {
     }
 
     const dev = isDevelopment();
-    const preview =
-      message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text;
+    const preview = message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text;
     const flowStarted = dev ? performance.now() : 0;
     if (dev) {
       this.logger.log(

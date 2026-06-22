@@ -1,5 +1,8 @@
 import { Controller, Get, HttpException, HttpStatus, Logger, Query } from "@nestjs/common";
-import { isDialogQueueEnabled, isDialogQueueWorkerEnabled } from "../dialog-queue/dialog-queue.constants";
+import {
+  isDialogQueueEnabled,
+  isDialogQueueWorkerEnabled,
+} from "../dialog-queue/dialog-queue.constants";
 import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
 import { BotUsageService } from "../bot-usage/bot-usage.service";
 
@@ -63,10 +66,7 @@ export class HealthController {
   }
 
   @Get("usage")
-  async getUsage(
-    @Query("bot") botId?: string,
-    @Query("hours") hoursRaw?: string,
-  ) {
+  async getUsage(@Query("bot") botId?: string, @Query("hours") hoursRaw?: string) {
     const sinceHours = this.parseHours(hoursRaw);
     try {
       const summary = await this.botUsage.summarize({ botId, sinceHours });

@@ -30,8 +30,7 @@ export class DialogQueueService implements OnApplicationShutdown {
    * Подключается к Redis при первом вызове, если очередь включена.
    */
   async getMetrics(): Promise<
-    | { enabled: false }
-    | { enabled: true; queue: string; counts: Record<string, number> }
+    { enabled: false } | { enabled: true; queue: string; counts: Record<string, number> }
   > {
     if (!isDialogQueueEnabled()) {
       return { enabled: false };
