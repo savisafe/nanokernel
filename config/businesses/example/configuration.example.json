@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 2,
+  "id": "example",
+  "name": "Example Studio",
+  "channel": {
+    "telegram": {
+      "tokenEnv": "EXAMPLE_TG_TOKEN",
+      "webhookSecret": "REPLACE_ME-with-a-random-string-min-8-chars"
+    }
+  },
+  "persona": {
+    "role": "online assistant for Example Studio, a small appointment-based business",
+    "language": "en",
+    "tone": "neutral",
+    "managerName": "Alex",
+    "intro": "Hi! I'm {managerName}, the assistant for {companyName}. I can tell you about our services and book you an appointment. What would you like to do?"
+  },
+  "businessInfo": {
+    "address": "123 Example Street, Suite 4",
+    "phone": "+1 555 010 0000",
+    "onlineBookingUrl": "https://example.com/book",
+    "workingHours": "Mon–Sat, 10:00–19:00",
+    "masters": ["Sam", "Jordan", "Riley"],
+    "services": [
+      {
+        "name": "Consultation",
+        "price": "free",
+        "duration": "15 min",
+        "description": "A short intro call to figure out what you need."
+      },
+      {
+        "name": "Standard service",
+        "price": "$30",
+        "duration": "45 min"
+      },
+      {
+        "name": "Premium service",
+        "price": "$60",
+        "duration": "90 min",
+        "description": "The full package."
+      }
+    ]
+  },
+  "goals": [
+    "Help the customer pick a service and book an appointment (service, optional staff member, day, time, name, phone).",
+    "Answer briefly and politely; when asked, share the address, hours, and prices from the facts above."
+  ],
+  "guardrails": {
+    "refuseTopics": [
+      "medical diagnoses or treatment",
+      "legal advice",
+      "financial or investment advice"
+    ],
+    "neverInvent": [
+      "prices other than those listed in the facts above",
+      "the address, phone, or staff names other than the facts above",
+      "availability or a specific staff member's schedule for a given day"
+    ],
+    "stickToScope": true,
+    "safetyChecks": ["medical", "legal", "financial", "injection"],
+    "refuseReply": "That's outside what I can help with — I'm the assistant for Example Studio and I help with our services and bookings. Is there anything about our services I can help you with?",
+    "rateLimitReply": "That's a lot of messages at once — please wait a moment and I'll get right back to you.",
+    "llmFallbackReply": "One moment, I'm having a brief technical hiccup. In the meantime you can book online here: {onlineBookingUrl}",
+    "rateLimit": {
+      "requests": 8,
+      "windowSeconds": 60
+    },
+    "burstLimit": {
+      "messages": 4,
+      "windowMs": 2500,
+      "cooldownSeconds": 30,
+      "reply": "You're sending messages very quickly — please wait a couple of seconds between messages."
+    },
+    "repeatLimit": {
+      "occurrences": 4,
+      "windowSeconds": 300,
+      "cooldownSeconds": 60,
+      "historySize": 10,
+      "reply": "It looks like you've sent that already — could you add a bit more detail so I can help?"
+    },
+    "maxReplyChars": 1200
+  },
+  "knowledge": {
+    "snippets": [
+      {
+        "id": "greeting",
+        "mode": "exact",
+        "match": ["/start"],
+        "reply": "Hi! I'm {managerName}, the assistant for {companyName}. I can tell you about our services or book you an appointment. What would you like to do?"
+      },
+      {
+        "id": "help",
+        "mode": "exact",
+        "match": ["/help", "help"],
+        "reply": "I can help you choose a service and book an appointment. Just tell me what you're interested in, or share a day and time that works for you."
+      },
+      {
+        "id": "cancel-fsm",
+        "mode": "exact",
+        "match": ["/cancel", "/reset"],
+        "reply": "Done, I've reset everything. Type \"book\" whenever you'd like to start again."
+      },
+      {
+        "id": "address",
+        "mode": "keywords",
+        "match": ["address", "where are you", "location", "how to get there", "directions"],
+        "reply": "We're at {address}."
+      },
+      {
+        "id": "phone",
+        "mode": "keywords",
+        "match": ["phone number", "call you", "your number", "contact number"],
+        "reply": "Our number is {phone}. Messaging here is usually fastest, though."
+      },
+      {
+        "id": "online-booking",
+        "mode": "keywords",
+        "match": ["book online", "booking link", "online booking", "link to book"],
+        "reply": "You can book online here: {onlineBookingUrl}\nOr just tell me the service and a time that works, and I'll book it for you."
+      },
+      {
+        "id": "services",
+        "mode": "keywords",
+        "match": ["what services", "what do you offer", "your services", "what can you do"],
+        "reply": "Here's what we offer:\n{servicesList}\n\nWhich one would you like to book?"
+      },
+      {
+        "id": "staff",
+        "mode": "keywords",
+        "match": ["who works", "staff", "which specialist", "who can i book"],
+        "reply": "Our team: {masters}. Anyone in particular, or should I just find the first open slot?"
+      },
+      {
+        "id": "hours",
+        "mode": "keywords",
+        "match": ["hours", "opening hours", "when are you open", "what time do you open", "what time do you close"],
+        "reply": "We're open {workingHours}. What day and time works best for you?"
+      },
+      {
+        "id": "price-list",
+        "mode": "keywords",
+        "match": ["price", "prices", "how much", "cost", "price list"],
+        "reply": "Our services and prices:\n{servicesPriceList}\n\nWant me to book one of these?"
+      }
+    ]
+  },
+  "style": {
+    "humanLike": true,
+    "rules": [
+      "Be warm, concise, and helpful. Keep replies to 1–2 sentences.",
+      "Never invent prices, availability, or staff schedules — use only the facts above. If you don't have the info, say you'll check.",
+      "Only quote a price or duration when the customer explicitly asks; first help them pick a service.",
+      "Ask for the customer's name only once, after you've agreed on the booking.",
+      "Reply with a single message at a time; don't send several messages in a row."
+    ]
+  },
+  "skills": ["book_slot"],
+  "scripts": {
+    "booking": {
+      "description": "Book an appointment: service -> staff (optional) -> day -> time -> name -> phone -> confirmation.",
+      "extraction": {
+        "intent": "the customer wants to book an appointment (they named a service, a staff member, a day or time, or directly asked to book)",
+        "fields": {
+          "service": "the service name — the closest match from:\n{servicesList}\nor null if no service was named",
+          "master": "a staff member from this list: {masters}; or null if none was named",
+          "date": "the day as the customer phrased it (e.g. \"today\", \"tomorrow\", \"Saturday\", \"June 2\"), or null",
+          "time": "the visit time in HH:MM (24-hour). The business is open {workingHours}, so \"2pm\" -> \"14:00\", \"11 in the morning\" -> \"11:00\". Vague times (\"evening\", \"afternoon\") -> null",
+          "name": "the customer's name for the booking (a person's name; NOT a service and NOT a staff name); or null",
+          "phone": "the customer's phone number — a sequence of 7–15 digits, optionally with a leading \"+\"; or null"
+        }
+      },
+      "trigger": {
+        "intent": [
+          "(?<![a-z])book(ing)?\\b",
+          "make an appointment",
+          "schedule (a|an|me)",
+          "i('| )?d like to (book|come in)",
+          "can i (book|come in|get an appointment)"
+        ]
+      },
+      "slots": {
+        "service": {
+          "ask": "Sure, I can book that. Which service would you like? (for example: consultation, standard, premium)",
+          "validate": "^(?!\\s*/)[A-Za-z][A-Za-z0-9\\s+\\-/()]{1,80}$",
+          "validateErrorReply": "Could you tell me the service in words — for example \"consultation\", \"standard\", or \"premium\"?",
+          "extract": "(consultation|standard|premium)"
+        },
+        "master": {
+          "optional": true,
+          "ask": "Who would you like to book with? Our team is Sam, Jordan, and Riley. If you don't mind, just say \"anyone\".",
+          "validate": "^(?!\\s*/)(sam|jordan|riley|any( ?one)?|no preference)\\s*$",
+          "validateErrorReply": "Could you give me a name — Sam, Jordan, or Riley — or just say \"anyone\"?",
+          "extract": "(sam|jordan|riley)"
+        },
+        "date": {
+          "ask": "What day works for you? You can say \"tomorrow\", \"Saturday\", or a date like \"June 25\".",
+          "validate": "^(?!\\s*/)(?=.*[A-Za-z0-9]).{2,40}$",
+          "validateErrorReply": "Could you tell me the day — for example \"tomorrow\", \"Saturday\", or a date like \"June 25\"?"
+        },
+        "time": {
+          "ask": "What time works for you? You can say \"15:00\" or \"3pm\".",
+          "validate": "^(?!\\s*/)(([01]?\\d|2[0-3])([:.][0-5]\\d)?\\s*(am|pm)?|noon|morning|afternoon|evening)\\s*$",
+          "validateErrorReply": "Could you give me a time like \"15:00\" or \"3pm\"?"
+        },
+        "name": {
+          "ask": "What's your name?",
+          "validate": "^(?!\\s*/)[A-Za-z][A-Za-z\\s\\-]{1,40}$",
+          "validateErrorReply": "Could you tell me your name, in letters?"
+        },
+        "phone": {
+          "ask": "What's the best phone number to reach you?",
+          "validate": "^\\+?[0-9][0-9\\s\\-()]{6,17}$",
+          "validateErrorReply": "That number looks off — please send it like +15550100000 or 5550100000."
+        }
+      },
+      "order": ["service", "master", "date", "time", "name", "phone"],
+      "confirm": "Let me confirm: {service}, with {master}, on {date} at {time}, for {name}, {phone}. Is that right? (yes/no)",
+      "onConfirm": {
+        "skill": "book_slot",
+        "successReply": "You're booked, {name}! {service} with {master}, on {date} at {time}.\n\nWe'll see you at {address}. Have a great day!",
+        "errorReply": "I couldn't save that booking. Let's try again — type \"book\" and we'll start over."
+      },
+      "onCancel": "No problem, I've cancelled that. If you change your mind, just type \"book\" and we'll find a time.",
+      "maxSlotAttempts": 2,
+      "onMaxAttempts": "I'm having trouble understanding — you can book online in a minute here: {onlineBookingUrl}. Or just tell me in your own words what works for you and I'll do my best."
+    }
+  },
+  "llm": {
+    "temperature": 0.6,
+    "maxTokens": 400,
+    "contextMessages": 8,
+    "toolCalling": "off"
+  }
+}

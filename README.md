@@ -57,7 +57,15 @@ Point a Telegram webhook at the running instance:
 npm run telegram:webhook:set
 ```
 
-> **Configs are not part of this repo.** Bot configurations live under `config/` and are git-ignored on purpose — the published kernel ships no business data. Bring your own config; an example schema/sample pack is provided separately.
+### Configuration
+
+A bot is a single JSON file under `config/businesses/<id>/configuration.json`, discovered at startup. To create one, copy the annotated template:
+
+```bash
+cp config/businesses/example/configuration.example.json config/businesses/my-bot/configuration.json
+```
+
+The template ([config/businesses/example/configuration.example.json](config/businesses/example/configuration.example.json)) is a complete, valid BotConfig v2 — persona, business facts, guardrails (rate/burst/repeat limits), snippet replies, a booking finite-state script, and LLM settings. Secrets are never stored in the JSON: channel tokens and API keys are referenced by environment-variable name (`tokenEnv`, `apiKeyEnv`). The `.example.json` suffix keeps the template from being auto-loaded — rename to `configuration.json` to activate.
 
 ## Status
 
