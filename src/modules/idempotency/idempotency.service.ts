@@ -11,11 +11,7 @@ export class IdempotencyService {
    * что provider'ские messageId уникальны только в рамках чата: без scope два разных чата
    * с одинаковым messageId маскируются друг за друга и второе сообщение тихо отбрасывается.
    */
-  async tryProcess(
-    channel: string,
-    scope: string,
-    externalMessageId?: string,
-  ): Promise<boolean> {
+  async tryProcess(channel: string, scope: string, externalMessageId?: string): Promise<boolean> {
     if (!externalMessageId) {
       return true;
     }
@@ -26,10 +22,7 @@ export class IdempotencyService {
       });
       return true;
     } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
-      ) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         return false;
       }
       throw error;
@@ -37,11 +30,7 @@ export class IdempotencyService {
   }
 
   /** Если постановка в очередь не удалась после tryProcess — чтобы провайдер мог повторить вебхук. */
-  async revert(
-    channel: string,
-    scope: string,
-    externalMessageId?: string,
-  ): Promise<void> {
+  async revert(channel: string, scope: string, externalMessageId?: string): Promise<void> {
     if (!externalMessageId) {
       return;
     }

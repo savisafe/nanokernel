@@ -1,10 +1,39 @@
 {
-  "name": "ai-bot",
+  "name": "nanokernel",
   "version": "1.0.0",
+  "description": "A lightweight, config-driven AI agent kernel — a tiny microkernel plus pluggable packs (channels, skills, language) that runs well on small, short-context models.",
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "chatbot",
+    "kernel",
+    "microkernel",
+    "config-driven",
+    "telegram",
+    "whatsapp",
+    "rag",
+    "nestjs",
+    "small-models"
+  ],
+  "homepage": "https://github.com/nanokernel-ai/nanokernel#readme",
+  "bugs": {
+    "url": "https://github.com/nanokernel-ai/nanokernel/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nanokernel-ai/nanokernel.git"
+  },
+  "license": "AGPL-3.0-only",
+  "author": "savatkachenko",
   "main": "dist/main.js",
   "scripts": {
     "postinstall": "prisma generate",
     "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "start": "node dist/main.js",
     "start:dev": "ts-node src/main.ts",
     "db:up": "docker compose up -d postgres redis",
@@ -17,10 +46,6 @@
     "telegram:webhook:delete": "node scripts/telegram-webhook.mjs delete",
     "safety:reset": "node scripts/safety-reset.mjs"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "@nestjs/common": "^11.1.18",
     "@nestjs/core": "^11.1.18",
@@ -41,12 +66,16 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^9.16.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^25.5.2",
     "@types/pdf-parse": "^1.1.5",
+    "eslint": "^9.16.0",
+    "prettier": "^3.4.2",
     "prisma": "^6.19.3",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.18.0"
   }
 }

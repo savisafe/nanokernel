@@ -49,10 +49,7 @@ export interface LlmToolSpec {
   parameters: Record<string, unknown>;
 }
 
-export type LlmToolDispatcher = (
-  name: string,
-  args: Record<string, unknown>,
-) => Promise<unknown>;
+export type LlmToolDispatcher = (name: string, args: Record<string, unknown>) => Promise<unknown>;
 
 interface ChatChoice {
   text?: string;
@@ -247,12 +244,9 @@ export class LlmService {
     }
 
     const timeoutRaw = process.env.LLM_TIMEOUT_MS?.trim();
-    const timeoutMs =
-      timeoutRaw !== undefined && timeoutRaw !== "" ? Number(timeoutRaw) : 0;
+    const timeoutMs = timeoutRaw !== undefined && timeoutRaw !== "" ? Number(timeoutRaw) : 0;
     const signal =
-      Number.isFinite(timeoutMs) && timeoutMs > 0
-        ? AbortSignal.timeout(timeoutMs)
-        : undefined;
+      Number.isFinite(timeoutMs) && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
 
     try {
       const response = await fetch(url, {
@@ -521,8 +515,7 @@ export class LlmService {
     messages: LlmChatMessage[],
   ): Array<{ role: string; content: string }> {
     const raw = process.env.LLM_DEV_LOG_TRUNCATE?.trim();
-    const limit =
-      raw === undefined || raw === "" ? 4000 : raw === "0" ? 0 : Number(raw);
+    const limit = raw === undefined || raw === "" ? 4000 : raw === "0" ? 0 : Number(raw);
     const max = Number.isFinite(limit) && limit >= 0 ? limit : 4000;
 
     return messages.map((m) => {

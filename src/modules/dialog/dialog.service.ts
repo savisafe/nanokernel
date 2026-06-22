@@ -33,9 +33,9 @@ export class DialogService {
   private readonly logger = new Logger(DialogService.name);
 
   private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
-      //TODO ru hardcode, move
+    //TODO ru hardcode, move
     /(?:^|[\s,.;:!?«»(])(пересказ|перескажи|суммарно|суммируй|кратко|резюме|выжимк|расскажи|опиши|объясни)(?:[\s,.;:!?»)]|$)/iu,
-      //TODO move magic link
+    //TODO move magic link
     /(^|\s)(summary|summarize|overview|tl;dr)(\s|$|[,.!?])/i,
     /(?:^|[\s,.;:!?«»(])(о\s+ч[её]м\s+документ|что\s+за\s+документ)(?:[\s,.;:!?»)]|$)/iu,
   ];
@@ -62,7 +62,10 @@ export class DialogService {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
 
-  composeSnapshot(profile: ResolvedLlmPromptProfile, bot: ResolvedBotConfiguration): DialogRuntimeSnapshot {
+  composeSnapshot(
+    profile: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): DialogRuntimeSnapshot {
     const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
     return {
       profile,
@@ -89,8 +92,14 @@ export class DialogService {
    * Не используется вебхуками; для внутренней диагностики и тестов.
    */
   //TODO legacy, unuse, need add linter
-  async runDiagnosticTurn(input: DialogInput, snapshot: DialogRuntimeSnapshot): Promise<DialogOutputWithDiagnostics> {
-    const { conversation } = await this.getOrCreateConversation(input.channel, input.externalUserId);
+  async runDiagnosticTurn(
+    input: DialogInput,
+    snapshot: DialogRuntimeSnapshot,
+  ): Promise<DialogOutputWithDiagnostics> {
+    const { conversation } = await this.getOrCreateConversation(
+      input.channel,
+      input.externalUserId,
+    );
 
     await this.prisma.message.create({
       data: {
@@ -153,7 +162,7 @@ export class DialogService {
     if (burst.blocked) {
       await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "burst");
       return {
-        replyText: burst.silent ? "" : burst.reply ?? "",
+        replyText: burst.silent ? "" : (burst.reply ?? ""),
         stage: conversation.stage,
       };
     }
@@ -176,7 +185,7 @@ export class DialogService {
     );
     if (repeat.blocked) {
       await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "repeat");
-      const replyText = repeat.silent ? "" : repeat.reply ?? "";
+      const replyText = repeat.silent ? "" : (repeat.reply ?? "");
       if (replyText) {
         await this.prisma.message.create({
           data: {
@@ -298,7 +307,10 @@ export class DialogService {
     return resolveEffectiveDialog(bot);
   }
 
-  private tokenizationRuntime(bot: ResolvedBotConfiguration): { regex: RegExp; stopWords: Set<string> } {
+  private tokenizationRuntime(bot: ResolvedBotConfiguration): {
+    regex: RegExp;
+    stopWords: Set<string>;
+  } {
     let cached = this.tokenizationRuntimeCache.get(bot.id);
     if (!cached) {
       const eff = this.effectiveFor(bot);
@@ -465,35 +477,36 @@ export class DialogService {
     // llm.toolCalling:"off" — LLM вообще без tools (чистый текст, работает на любой
     // модели); навыки тогда дёргает только FSM/роутер (инверсия управления).
     const llmTools =
-      snap.bot.llm?.toolCalling === "off"
-        ? []
-        : enabledSkills.filter((s) => !s.fsmOnly);
+      snap.bot.llm?.toolCalling === "off" ? [] : enabledSkills.filter((s) => !s.fsmOnly);
     const llmOptions = {
       ...(snap.bot.llm ?? {}),
       ...(onTextDelta ? { onTextDelta } : {}),
     };
-    const out = llmTools.length > 0
-      ? await this.llmService.completeWithTools(
-          messages,
-          llmOptions,
-          llmTools.map((s) => this.skills.toToolSpec(s)),
-          async (name, args) => {
-            const skill = this.skills.get(name);
-            if (!skill) {
-              return { error: `unknown skill "${name}"` };
-            }
-            const result = await skill.execute(args, {
-              botId: snap.bot.id,
-              conversationId,
-              channel,
-            });
-            if (isDevelopment()) {
-              this.logger.debug(`skill exec bot=${snap.bot.id} name=${name} args=${JSON.stringify(args)}`);
-            }
-            return result.data;
-          },
-        )
-      : await this.llmService.complete(messages, llmOptions);
+    const out =
+      llmTools.length > 0
+        ? await this.llmService.completeWithTools(
+            messages,
+            llmOptions,
+            llmTools.map((s) => this.skills.toToolSpec(s)),
+            async (name, args) => {
+              const skill = this.skills.get(name);
+              if (!skill) {
+                return { error: `unknown skill "${name}"` };
+              }
+              const result = await skill.execute(args, {
+                botId: snap.bot.id,
+                conversationId,
+                channel,
+              });
+              if (isDevelopment()) {
+                this.logger.debug(
+                  `skill exec bot=${snap.bot.id} name=${name} args=${JSON.stringify(args)}`,
+                );
+              }
+              return result.data;
+            },
+          )
+        : await this.llmService.complete(messages, llmOptions);
     if (out) {
       await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
       if (isDevelopment()) {
@@ -672,7 +685,11 @@ export class DialogService {
   private async retrieveKnowledgeContextDetailed(
     userText: string,
     snap: DialogRuntimeSnapshot,
-  ): Promise<{ context?: string; mode: "none" | "lexical" | "rag"; chunks: DialogDiagnosticChunk[] }> {
+  ): Promise<{
+    context?: string;
+    mode: "none" | "lexical" | "rag";
+    chunks: DialogDiagnosticChunk[];
+  }> {
     const rp = this.effectiveFor(snap.bot).retrievalPresentation;
     const defaultTopK = rp.defaultTopK;
     const maxContextChars = rp.maxContextChars ?? 5000;
@@ -830,7 +847,7 @@ export class DialogService {
     }
 
     if (
-        //TODO ru hardcode
+      //TODO ru hardcode
       /(?:^|[\s,.;:!?«»(])(о\s+чем|о\s+чём|про\s+что|про\s+чём|на\s+чём|на\s+чем|что\s+за)\s+/iu.test(
         text,
       )
@@ -839,8 +856,8 @@ export class DialogService {
     }
 
     const hasDocAnchor =
-        //TODO ru hardcode
-        /(?:^|[\s,.;:!?«»(])(документ|документа|документе|текст|текста|файл|файла|база|базу|материал|материалу|загружен|загрузил)(?:[\s,.;:!?»)]|$)/iu.test(
+      //TODO ru hardcode
+      /(?:^|[\s,.;:!?«»(])(документ|документа|документе|текст|текста|файл|файла|база|базу|материал|материалу|загружен|загрузил)(?:[\s,.;:!?»)]|$)/iu.test(
         text,
       );
     const hasGlobalIntentVerb =

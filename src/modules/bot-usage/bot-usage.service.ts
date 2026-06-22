@@ -50,11 +50,7 @@ export class BotUsageService {
     });
   }
 
-  async recordSafetyBlock(
-    botId: string,
-    conversationId: string,
-    category: string,
-  ): Promise<void> {
+  async recordSafetyBlock(botId: string, conversationId: string, category: string): Promise<void> {
     await this.safeCreate({
       botId,
       conversationId,

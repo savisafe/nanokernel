@@ -53,7 +53,9 @@ function discoverConfigFiles() {
 function discoverBots() {
   const configs = discoverConfigFiles();
   if (configs.length === 0) {
-    console.error("Cannot find any bot configurations (config/businesses/* or config/configurations/*).");
+    console.error(
+      "Cannot find any bot configurations (config/businesses/* or config/configurations/*).",
+    );
     return [];
   }
   const out = [];
@@ -150,7 +152,9 @@ async function runLegacy(command) {
       console.error("TELEGRAM_WEBHOOK_URL (or TELEGRAM_WEBHOOK_BASE_URL) is not set");
       process.exit(1);
     }
-    const url = baseUrl.includes("/webhooks/telegram") ? baseUrl : `${baseUrl.replace(/\/$/, "")}/webhooks/telegram`;
+    const url = baseUrl.includes("/webhooks/telegram")
+      ? baseUrl
+      : `${baseUrl.replace(/\/$/, "")}/webhooks/telegram`;
     const data = await api(token, "setWebhook", { url });
     console.log(`[legacy] set → ${url} (${data.description ?? "ok"})`);
   } else if (command === "info") {

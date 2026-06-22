@@ -25,8 +25,18 @@ export class BookingNotifierService {
   private readonly logger = new Logger(BookingNotifierService.name);
 
   private static readonly MONTHS: Record<string, number> = {
-    январ: 1, феврал: 2, март: 3, апрел: 4, ма: 5, июн: 6,
-    июл: 7, август: 8, сентябр: 9, октябр: 10, ноябр: 11, декабр: 12,
+    январ: 1,
+    феврал: 2,
+    март: 3,
+    апрел: 4,
+    ма: 5,
+    июн: 6,
+    июл: 7,
+    август: 8,
+    сентябр: 9,
+    октябр: 10,
+    ноябр: 11,
+    декабр: 12,
   };
 
   constructor(private readonly botConfig: BotConfigurationService) {}
@@ -36,7 +46,9 @@ export class BookingNotifierService {
       const bot = this.botConfig.resolveById(botId);
       const chatId = bot.notifications?.telegramChatId;
       if (!chatId) {
-        this.logger.debug(`No notifications.telegramChatId for bot=${botId} — skip booking notice.`);
+        this.logger.debug(
+          `No notifications.telegramChatId for bot=${botId} — skip booking notice.`,
+        );
         return;
       }
       const tokenEnv = bot.channel?.telegram?.tokenEnv;
@@ -53,7 +65,9 @@ export class BookingNotifierService {
         body: JSON.stringify({ chat_id: chatId, text }),
       });
       if (!res.ok) {
-        this.logger.warn(`Booking notice send failed bot=${botId}: ${res.status} ${await res.text()}`);
+        this.logger.warn(
+          `Booking notice send failed bot=${botId}: ${res.status} ${await res.text()}`,
+        );
       }
     } catch (e) {
       this.logger.warn(
@@ -67,7 +81,9 @@ export class BookingNotifierService {
     lines.push(this.formatDate(n.date));
     if (n.service) lines.push(n.service);
     lines.push(n.master ? n.master : "Мастер не указан");
-    lines.push(n.amount !== undefined ? `${n.amount.toLocaleString("ru-RU")} ₸` : "Сумма уточняется");
+    lines.push(
+      n.amount !== undefined ? `${n.amount.toLocaleString("ru-RU")} ₸` : "Сумма уточняется",
+    );
     // Доп. контекст (время/имя/телефон) — после основного блока.
     const extra: string[] = [];
     if (n.time) extra.push(`Время: ${n.time}`);
@@ -93,7 +109,7 @@ export class BookingNotifierService {
     if (lower === "завтра") return this.dmy(this.addDays(today, 1));
     if (lower === "послезавтра") return this.dmy(this.addDays(today, 2));
 
-    const numeric = lower.match(/^(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?$/);
+    const numeric = lower.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/);
     if (numeric) {
       const day = Number(numeric[1]);
       const month = Number(numeric[2]);
@@ -107,7 +123,9 @@ export class BookingNotifierService {
     if (worded) {
       const day = Number(worded[1]);
       const monthWord = worded[2];
-      const monthKey = Object.keys(BookingNotifierService.MONTHS).find((k) => monthWord.startsWith(k));
+      const monthKey = Object.keys(BookingNotifierService.MONTHS).find((k) =>
+        monthWord.startsWith(k),
+      );
       if (monthKey && day >= 1 && day <= 31) {
         const month = BookingNotifierService.MONTHS[monthKey];
         return this.dmyParts(day, month, today.getFullYear());

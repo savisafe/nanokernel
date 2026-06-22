@@ -149,7 +149,11 @@ export class MestoClientService {
     return this.request(botId, "POST", "/api/external/bookings", body);
   }
 
-  patchBooking(botId: string, appointmentId: string, body: PatchBookingBody): Promise<MestoResponse> {
+  patchBooking(
+    botId: string,
+    appointmentId: string,
+    body: PatchBookingBody,
+  ): Promise<MestoResponse> {
     return this.request(botId, "PATCH", `/api/external/bookings/${appointmentId}`, body);
   }
 

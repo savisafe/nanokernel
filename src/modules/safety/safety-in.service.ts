@@ -10,9 +10,7 @@ import { DEFAULT_REFUSE_REPLIES, SafetyCategory, SafetyInResult } from "./safety
 export class SafetyInService {
   private readonly logger = new Logger(SafetyInService.name);
   // Скомпилированные регексы — общие на процесс (паттерны статичны).
-  private readonly injectionRegexes: RegExp[] = INJECTION_PATTERNS.map(
-    (p) => new RegExp(p, "iu"),
-  );
+  private readonly injectionRegexes: RegExp[] = INJECTION_PATTERNS.map((p) => new RegExp(p, "iu"));
 
   constructor(
     private readonly rateLimit: RateLimitService,
@@ -92,11 +90,7 @@ export class SafetyInService {
     if (!cfg) {
       return { blocked: false };
     }
-    const r = await this.flood.checkRepeat(
-      `${bot.id}:${channel}:${externalUserId}`,
-      text,
-      cfg,
-    );
+    const r = await this.flood.checkRepeat(`${bot.id}:${channel}:${externalUserId}`, text, cfg);
     if (!r.blocked) {
       return { blocked: false };
     }

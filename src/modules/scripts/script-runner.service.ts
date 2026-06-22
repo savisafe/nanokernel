@@ -24,8 +24,7 @@ export class ScriptRunnerService {
     /^\s*(отмена|отмени(ть|те)?|стоп|не\s+надо|передума(л|ла)|cancel|stop)(?:[\s,.!?]|$)/iu;
   private static readonly YES_RE =
     /^\s*(да|ок(ей)?|верно|согласен|согласна|подтверждаю|подтвердить|конечно|yes|y|\+)(?:[\s,.!?]|$)/iu;
-  private static readonly NO_RE =
-    /^\s*(нет|неа|не\s+верно|неправильно|no|n|-)(?:[\s,.!?]|$)/iu;
+  private static readonly NO_RE = /^\s*(нет|неа|не\s+верно|неправильно|no|n|-)(?:[\s,.!?]|$)/iu;
 
   /** Неудачных попыток на слот до эскалации, если в конфиге не задано иное. */
   private static readonly DEFAULT_MAX_SLOT_ATTEMPTS = 2;
@@ -60,7 +59,13 @@ export class ScriptRunnerService {
       // Conversational-режим (скрипт с `extraction`): копим слоты и уступаем ход LLM,
       // пока не собрано всё для записи. Линейный FSM — только для скриптов без extraction.
       if (def.extraction) {
-        return this.conversationalStep(conversation, bot.id, conversation.activeScript, def, userText);
+        return this.conversationalStep(
+          conversation,
+          bot.id,
+          conversation.activeScript,
+          def,
+          userText,
+        );
       }
       return this.continueActive(conversation, bot.id, conversation.activeScript, def, userText);
     }
@@ -92,7 +97,9 @@ export class ScriptRunnerService {
   ): Promise<ScriptStepOutcome> {
     const firstSlot = def.order[0];
     if (!firstSlot || !def.slots[firstSlot]) {
-      this.logger.warn(`Script "${name}" has empty order or missing first slot — ignoring trigger.`);
+      this.logger.warn(
+        `Script "${name}" has empty order or missing first slot — ignoring trigger.`,
+      );
       return { handled: false };
     }
 
@@ -225,7 +232,13 @@ export class ScriptRunnerService {
     def: ScriptSpec,
     exSlots: ScriptSlots,
   ): Promise<ScriptStepOutcome> {
-    return this.decideBooking(conversation, botId, name, def, this.validForSlots(name, def, exSlots));
+    return this.decideBooking(
+      conversation,
+      botId,
+      name,
+      def,
+      this.validForSlots(name, def, exSlots),
+    );
   }
 
   /** Очередная реплика в активной записи. */
@@ -335,7 +348,8 @@ export class ScriptRunnerService {
         return `На «${merged.date}» приёма нет (${day.closedReason ?? "выходной"}) — предложи другой день.\n`;
       }
       const times = day.times ?? [];
-      if (times.length === 0) return `На «${merged.date}» свободных окон нет — предложи другой день.\n`;
+      if (times.length === 0)
+        return `На «${merged.date}» свободных окон нет — предложи другой день.\n`;
       const who = merged.master && merged.master !== "любой" ? ` (мастер ${merged.master})` : "";
       return `Свободные окна на «${merged.date}»${who}: ${times.join(", ")}.\n`;
     } catch {
@@ -435,7 +449,17 @@ export class ScriptRunnerService {
       // LLM-нормализация значений слотов из свободной речи («днём в 2»→«14:00») вместо regex —
       // по fields-подсказкам из конфига скрипта (extraction).
       const ex = await this.extractor.extract(def, userText);
-      return this.handleSlot(conversation, name, def, slots, slotName, spec, userText, attempts, ex?.slots);
+      return this.handleSlot(
+        conversation,
+        name,
+        def,
+        slots,
+        slotName,
+        spec,
+        userText,
+        attempts,
+        ex?.slots,
+      );
     }
 
     // Неизвестное состояние — лечим сбросом.
@@ -609,9 +633,7 @@ export class ScriptRunnerService {
     if (ScriptRunnerService.YES_RE.test(userText)) {
       const skill = this.skills.get(def.onConfirm.skill);
       if (!skill) {
-        this.logger.warn(
-          `Script "${name}" onConfirm.skill="${def.onConfirm.skill}" not found.`,
-        );
+        this.logger.warn(`Script "${name}" onConfirm.skill="${def.onConfirm.skill}" not found.`);
         await this.clearState(conversation.id);
         return {
           handled: true,
@@ -638,7 +660,10 @@ export class ScriptRunnerService {
       await this.clearState(conversation.id);
       return {
         handled: true,
-        reply: interpolateTemplate(success ? def.onConfirm.successReply : def.onConfirm.errorReply, slots),
+        reply: interpolateTemplate(
+          success ? def.onConfirm.successReply : def.onConfirm.errorReply,
+          slots,
+        ),
         terminal: true,
         scriptName: name,
       };

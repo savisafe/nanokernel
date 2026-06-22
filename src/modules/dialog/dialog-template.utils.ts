@@ -3,6 +3,8 @@ export function interpolateTemplate(
   vars: Record<string, string | number>,
 ): string {
   return template.replace(/\{(\w+)\}/g, (_, key: string) =>
-    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key as keyof typeof vars]) : `{${key}}`,
+    Object.prototype.hasOwnProperty.call(vars, key)
+      ? String(vars[key as keyof typeof vars])
+      : `{${key}}`,
   );
 }

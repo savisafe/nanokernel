@@ -12,7 +12,10 @@ const MAX_EXTRACTED_CHARS = 5_000_000;
 
 @Injectable()
 export class DocumentIngestService {
-  async extractText(buffer: Buffer, meta: { fileName?: string; mimeType?: string }): Promise<DocumentIngestResult> {
+  async extractText(
+    buffer: Buffer,
+    meta: { fileName?: string; mimeType?: string },
+  ): Promise<DocumentIngestResult> {
     const format = this.detectFormat(meta);
     if (format === "unsupported") {
       return { ok: false, kind: "unsupported" };
@@ -29,14 +32,16 @@ export class DocumentIngestService {
         text = this.extractPlainText(buffer);
       }
 
+      // Intentionally strip NUL bytes that some PDF/DOCX extractors emit.
+      // eslint-disable-next-line no-control-regex
       const normalized = text.replace(/\u0000/g, "").trim();
       if (!normalized) {
         return { ok: false, kind: "empty" };
       }
       const capped =
         normalized.length > MAX_EXTRACTED_CHARS
-            //TODO ru hardcode
-          ? `${normalized.slice(0, MAX_EXTRACTED_CHARS)}\n\n[… текст обрезан по лимиту]`
+          ? //TODO ru hardcode
+            `${normalized.slice(0, MAX_EXTRACTED_CHARS)}\n\n[… текст обрезан по лимиту]`
           : normalized;
       return { ok: true, text: capped };
     } catch (e) {
@@ -45,8 +50,11 @@ export class DocumentIngestService {
     }
   }
 
-    //TODO move types
-  private detectFormat(meta: { fileName?: string; mimeType?: string }): "pdf" | "docx" | "txt" | "unsupported" {
+  //TODO move types
+  private detectFormat(meta: {
+    fileName?: string;
+    mimeType?: string;
+  }): "pdf" | "docx" | "txt" | "unsupported" {
     const name = meta.fileName?.toLowerCase() ?? "";
     const mime = meta.mimeType?.toLowerCase() ?? "";
 
@@ -60,7 +68,10 @@ export class DocumentIngestService {
     ) {
       return "docx";
     }
-    if (name.endsWith(".doc") && mime !== "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    if (
+      name.endsWith(".doc") &&
+      mime !== "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
       return "unsupported";
     }
     if (

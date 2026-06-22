@@ -1,10 +1,7 @@
 import type { DialogConfigFileJson } from "../../dialog/dialog.config.types";
 import type { PromptProfileFileJson } from "../../prompt-profile/prompt-profile.types";
 import { interpolateTemplate } from "../../dialog/dialog-template.utils";
-import type {
-  ResolvedBotConfiguration,
-  ResolvedBusinessInfo,
-} from "../bot-configuration.types";
+import type { ResolvedBotConfiguration, ResolvedBusinessInfo } from "../bot-configuration.types";
 import type { BotConfigV2 } from "./bot-config-v2.types";
 import { buildSystemPromptFromV2 } from "./system-prompt-builder";
 
@@ -34,14 +31,12 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     companyName: v2.name,
     persona: v2.persona.role,
     language,
-    humanLikeMode: v2.style?.humanLike ?? v2.persona.tone === "human" ? true : undefined,
+    humanLikeMode: (v2.style?.humanLike ?? v2.persona.tone === "human") ? true : undefined,
   };
 
   const dialog: DialogConfigFileJson = {
     systemPrompt: { template: buildSystemPromptFromV2(v2WithInterpolatedIntro) },
-    ...(v2.llm?.contextMessages !== undefined
-      ? { contextMessages: v2.llm.contextMessages }
-      : {}),
+    ...(v2.llm?.contextMessages !== undefined ? { contextMessages: v2.llm.contextMessages } : {}),
   };
 
   const llm =
@@ -53,7 +48,9 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
           ...(v2.llm.temperature !== undefined ? { temperature: v2.llm.temperature } : {}),
           ...(v2.llm.maxTokens !== undefined ? { maxTokens: v2.llm.maxTokens } : {}),
           ...(v2.llm.toolCalling !== undefined ? { toolCalling: v2.llm.toolCalling } : {}),
-          ...(v2.llm.contextMessages !== undefined ? { contextMessages: v2.llm.contextMessages } : {}),
+          ...(v2.llm.contextMessages !== undefined
+            ? { contextMessages: v2.llm.contextMessages }
+            : {}),
         }
       : undefined;
 
@@ -110,9 +107,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
         }
       : undefined;
 
-  const channel = v2.channel?.telegram
-    ? { telegram: { ...v2.channel.telegram } }
-    : undefined;
+  const channel = v2.channel?.telegram ? { telegram: { ...v2.channel.telegram } } : undefined;
 
   // Подставляем плейсхолдеры в reply сниппетов на этапе адаптации (а не в matcher),
   // чтобы compileFor… кеш брал уже готовые тексты и не зависел от businessInfo.
@@ -140,9 +135,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
         ...(v2.businessInfo.onlineBookingUrl
           ? { onlineBookingUrl: v2.businessInfo.onlineBookingUrl }
           : {}),
-        ...(v2.businessInfo.workingHours
-          ? { workingHours: v2.businessInfo.workingHours }
-          : {}),
+        ...(v2.businessInfo.workingHours ? { workingHours: v2.businessInfo.workingHours } : {}),
         ...(v2.businessInfo.masters && v2.businessInfo.masters.length > 0
           ? { masters: v2.businessInfo.masters }
           : {}),
@@ -188,18 +181,13 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
                   errorReply: ts(def.onConfirm.errorReply) ?? def.onConfirm.errorReply,
                 },
                 onCancel: ts(def.onCancel) ?? def.onCancel,
-                ...(def.onMaxAttempts
-                  ? { onMaxAttempts: ts(def.onMaxAttempts)! }
-                  : {}),
+                ...(def.onMaxAttempts ? { onMaxAttempts: ts(def.onMaxAttempts)! } : {}),
                 ...(def.extraction
                   ? {
                       extraction: {
                         intent: ts(def.extraction.intent) ?? def.extraction.intent,
                         fields: Object.fromEntries(
-                          Object.entries(def.extraction.fields).map(([k, v]) => [
-                            k,
-                            ts(v) ?? v,
-                          ]),
+                          Object.entries(def.extraction.fields).map(([k, v]) => [k, ts(v) ?? v]),
                         ),
                       },
                     }
@@ -223,14 +211,18 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     ...(guardrails ? { guardrails } : {}),
     ...(channel ? { channel } : {}),
     ...(persona ? { persona } : {}),
-    ...(businessInfo && Object.keys(businessInfo).length > 0
-      ? { businessInfo }
-      : {}),
+    ...(businessInfo && Object.keys(businessInfo).length > 0 ? { businessInfo } : {}),
     ...(v2.notifications && v2.notifications.telegramChatId !== undefined
       ? { notifications: { telegramChatId: v2.notifications.telegramChatId } }
       : {}),
     ...(v2.crm
-      ? { crm: { provider: v2.crm.provider, baseUrl: v2.crm.baseUrl.replace(/\/+$/, ""), apiKeyEnv: v2.crm.apiKeyEnv } }
+      ? {
+          crm: {
+            provider: v2.crm.provider,
+            baseUrl: v2.crm.baseUrl.replace(/\/+$/, ""),
+            apiKeyEnv: v2.crm.apiKeyEnv,
+          },
+        }
       : {}),
   };
 }
@@ -246,8 +238,7 @@ function buildTemplateVars(v2: BotConfigV2): Record<string, string> {
   if (v2.persona.managerName) vars.managerName = v2.persona.managerName;
   if (v2.businessInfo?.address) vars.address = v2.businessInfo.address;
   if (v2.businessInfo?.phone) vars.phone = v2.businessInfo.phone;
-  if (v2.businessInfo?.onlineBookingUrl)
-    vars.onlineBookingUrl = v2.businessInfo.onlineBookingUrl;
+  if (v2.businessInfo?.onlineBookingUrl) vars.onlineBookingUrl = v2.businessInfo.onlineBookingUrl;
   if (v2.businessInfo?.workingHours) vars.workingHours = v2.businessInfo.workingHours;
   if (v2.businessInfo?.masters && v2.businessInfo.masters.length > 0) {
     vars.masters = v2.businessInfo.masters.join(", ");
@@ -268,10 +259,7 @@ function buildTemplateVars(v2: BotConfigV2): Record<string, string> {
   return vars;
 }
 
-function filterOut(
-  vars: Record<string, string>,
-  exclude: Set<string>,
-): Record<string, string> {
+function filterOut(vars: Record<string, string>, exclude: Set<string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(vars)) {
     if (!exclude.has(k)) out[k] = v;
