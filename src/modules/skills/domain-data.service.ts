@@ -4,7 +4,7 @@ import { resolveDomainDataFile } from "../shared/config-paths";
 
 /**
  * Структурные данные бота (каталоги, прайсы, расписания и т.п.).
- * Хранение (per-business): `config/businesses/<botId>/data/<entity>.json`
+ * Хранение (per-bot): `config/<botId>/data/<entity>.json`
  * (legacy-fallback `config/data/<botId>/<entity>.json`), резолв — `config-paths.ts`.
  * Кеш — in-memory на процесс.
  *

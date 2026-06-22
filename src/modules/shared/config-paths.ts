@@ -4,10 +4,10 @@ import path from "node:path";
 /**
  * Единая точка резолва путей конфигов и данных ботов.
  *
- * Layout (per-business): всё про одного бота лежит в `<root>/businesses/<id>/`:
+ * Layout (per-bot): всё про одного бота лежит в `<root>/<id>/`:
  *   - `configuration.json` — декларация бота (BotConfig v2);
  *   - `data/<entity>.json` — структурные данные для skills.
- * Это даёт co-location: переезд/клонирование бизнеса = перенос одной папки.
+ * Это даёт co-location: переезд/клонирование бота = перенос одной папки.
  *
  * Legacy layout поддерживается как fallback (плавный переход):
  *   - `<root>/configurations/<id>.json`
@@ -17,10 +17,13 @@ import path from "node:path";
  * Менять расположение конфигов при переезде нужно ТОЛЬКО здесь.
  */
 
-const BUSINESSES_DIR = "businesses";
 const LEGACY_CONFIG_DIR = "configurations";
 const DATA_DIR = "data";
 const CONFIG_FILE = "configuration.json";
+
+// Зарезервированные имена папок под корнем config/ — не считаются ботами
+// (это контейнеры legacy-layout, а не директории конкретного бота).
+const RESERVED_DIRS = new Set([LEGACY_CONFIG_DIR, DATA_DIR]);
 
 export function configRoot(): string {
   const override = process.env.CONFIG_ROOT?.trim();
@@ -32,9 +35,9 @@ export function configRoot(): string {
 /** Путь к файлу конфигурации бота. Новый layout приоритетнее legacy. */
 export function resolveBotConfigFile(id: string): string {
   const root = configRoot();
-  const perBusiness = path.join(root, BUSINESSES_DIR, id, CONFIG_FILE);
-  if (existsSync(perBusiness)) {
-    return perBusiness;
+  const perBot = path.join(root, id, CONFIG_FILE);
+  if (existsSync(perBot)) {
+    return perBot;
   }
   return path.join(root, LEGACY_CONFIG_DIR, `${id}.json`);
 }
@@ -44,15 +47,18 @@ export function listBotConfigIds(): string[] {
   const root = configRoot();
   const ids = new Set<string>();
 
-  const businessesDir = path.join(root, BUSINESSES_DIR);
   try {
-    for (const entry of readdirSync(businessesDir, { withFileTypes: true })) {
-      if (entry.isDirectory() && existsSync(path.join(businessesDir, entry.name, CONFIG_FILE))) {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (
+        entry.isDirectory() &&
+        !RESERVED_DIRS.has(entry.name) &&
+        existsSync(path.join(root, entry.name, CONFIG_FILE))
+      ) {
         ids.add(entry.name);
       }
     }
   } catch {
-    // папки businesses может не быть — это ок (только legacy layout).
+    // папки config может не быть — это ок (только legacy/override).
   }
 
   const legacyDir = path.join(root, LEGACY_CONFIG_DIR);
@@ -72,9 +78,9 @@ export function listBotConfigIds(): string[] {
 /** Путь к файлу domain data сущности бота. Новый layout приоритетнее legacy. */
 export function resolveDomainDataFile(botId: string, entity: string): string {
   const root = configRoot();
-  const perBusiness = path.join(root, BUSINESSES_DIR, botId, DATA_DIR, `${entity}.json`);
-  if (existsSync(perBusiness)) {
-    return perBusiness;
+  const perBot = path.join(root, botId, DATA_DIR, `${entity}.json`);
+  if (existsSync(perBot)) {
+    return perBot;
   }
   return path.join(root, DATA_DIR, botId, `${entity}.json`);
 }

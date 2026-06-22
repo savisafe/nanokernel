@@ -12,7 +12,7 @@ const baseUrl = process.env.TELEGRAM_WEBHOOK_BASE_URL ?? process.env.TELEGRAM_WE
 
 /**
  * Multi-bot режим (рекомендуемый): TELEGRAM_WEBHOOK_BASE_URL=https://yourdomain.com.
- * Для каждой сборки (per-business `config/businesses/<id>/configuration.json` или legacy
+ * Для каждой сборки (per-bot `config/<id>/configuration.json` или legacy
  * `config/configurations/<id>.json`) с channel.telegram.{tokenEnv,webhookSecret}
  * этот скрипт построит {baseUrl}/webhooks/telegram/<secret> и зарегистрирует его.
  *
@@ -31,12 +31,13 @@ function discoverConfigFiles() {
   } catch {
     /* нет legacy папки — ок */
   }
-  // per-business: config/businesses/<id>/configuration.json (перекрывает legacy)
+  // per-bot: config/<id>/configuration.json (перекрывает legacy)
+  const reserved = new Set(["configurations", "data"]);
   try {
-    const businessesDir = join(root, "config", "businesses");
-    for (const entry of readdirSync(businessesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const file = join(businessesDir, entry.name, "configuration.json");
+    const configDir = join(root, "config");
+    for (const entry of readdirSync(configDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || reserved.has(entry.name)) continue;
+      const file = join(configDir, entry.name, "configuration.json");
       try {
         readFileSync(file, "utf8");
         byId.set(entry.name, file);
@@ -45,7 +46,7 @@ function discoverConfigFiles() {
       }
     }
   } catch {
-    /* нет businesses папки — ок */
+    /* нет папки config — ок */
   }
   return [...byId.entries()].map(([id, file]) => ({ id, file }));
 }
@@ -54,7 +55,7 @@ function discoverBots() {
   const configs = discoverConfigFiles();
   if (configs.length === 0) {
     console.error(
-      "Cannot find any bot configurations (config/businesses/* or config/configurations/*).",
+      "Cannot find any bot configurations (config/<id>/configuration.json or config/configurations/*.json).",
     );
     return [];
   }

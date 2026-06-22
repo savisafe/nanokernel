@@ -59,13 +59,13 @@ npm run telegram:webhook:set
 
 ### Configuration
 
-A bot is a single JSON file under `config/businesses/<id>/configuration.json`, discovered at startup. To create one, copy the annotated template:
+A bot is a single JSON file under `config/<id>/configuration.json`, discovered at startup. To create one, copy the annotated template:
 
 ```bash
-cp config/businesses/example/configuration.example.json config/businesses/my-bot/configuration.json
+cp config/example/configuration.example.json config/my-bot/configuration.json
 ```
 
-The template ([config/businesses/example/configuration.example.json](config/businesses/example/configuration.example.json)) is a complete, valid BotConfig v2 — persona, business facts, guardrails (rate/burst/repeat limits), snippet replies, a booking finite-state script, and LLM settings. Secrets are never stored in the JSON: channel tokens and API keys are referenced by environment-variable name (`tokenEnv`, `apiKeyEnv`). The `.example.json` suffix keeps the template from being auto-loaded — rename to `configuration.json` to activate.
+The template ([config/example/configuration.example.json](config/example/configuration.example.json)) is a complete, valid BotConfig v2 — persona, business facts, guardrails (rate/burst/repeat limits), snippet replies, a booking finite-state script, and LLM settings. Secrets are never stored in the JSON: channel tokens and API keys are referenced by environment-variable name (`tokenEnv`, `apiKeyEnv`). The `.example.json` suffix keeps the template from being auto-loaded — rename to `configuration.json` to activate.
 
 ## Status
 
