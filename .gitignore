@@ -1,7 +1,7 @@
 node_modules/
 dist/
 example-chats
-knowledge-base
+config/b1
 .idea
 .env
 .env.local

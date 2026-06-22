@@ -8,7 +8,7 @@
  *     — удалить ВСЕ ключи `safety:*` (все боты, все юзеры).
  *
  *   node scripts/safety-reset.mjs bot <bot-id>
- *     — только ключи конкретного бота (например, `daria-mokko`).
+ *     — только ключи конкретного бота (например, `b1`).
  *
  *   node scripts/safety-reset.mjs user <bot-id> <channel> <externalUserId>
  *     — только конкретный {bot,channel,user}. Channel обычно "telegram".
