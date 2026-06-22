@@ -9,7 +9,7 @@ import {
 import { Job, Worker } from "bullmq";
 import { TelegramService } from "../telegram/telegram.service";
 import { WhatsAppService } from "../whatsapp/whatsapp.service";
-import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
+import { ChannelRegistry } from "../channels/channel-adapter.contract";
 import { isDevelopment } from "../shared/is-development";
 import { DialogInboundJob } from "./dialog-inbound-job.types";
 import {
@@ -24,14 +24,17 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
   private readonly logger = new Logger(DialogQueueWorkerService.name);
   private readonly connection = createRedisConnectionForBullmq();
   private worker: Worker | undefined;
+  /** Полиморфный реестр каналов: воркер не знает про конкретные Telegram/WhatsApp. */
+  private readonly channels: ChannelRegistry;
 
   constructor(
     @Inject(forwardRef(() => TelegramService))
-    private readonly telegramService: TelegramService,
+    telegramService: TelegramService,
     @Inject(forwardRef(() => WhatsAppService))
-    private readonly whatsAppService: WhatsAppService,
-    private readonly botConfigurationService: BotConfigurationService,
-  ) {}
+    whatsAppService: WhatsAppService,
+  ) {
+    this.channels = new ChannelRegistry([telegramService, whatsAppService]);
+  }
 
   onModuleInit() {
     if (!isDialogQueueEnabled()) {
@@ -47,12 +50,12 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
       DIALOG_INBOUND_QUEUE_NAME,
       async (job: Job<DialogInboundJob>) => {
         const data = job.data;
-        if (data.channel === "telegram") {
-          const bot = this.botConfigurationService.resolveById(data.botId);
-          await this.telegramService.processInboundQueued(data, bot);
-        } else {
-          await this.whatsAppService.processInboundQueued(data);
+        const adapter = this.channels.get(data.channel);
+        if (!adapter) {
+          this.logger.error(`No channel adapter registered for "${data.channel}" — job dropped`);
+          return;
         }
+        await adapter.processInbound(data);
       },
       { connection: this.connection, concurrency },
     );

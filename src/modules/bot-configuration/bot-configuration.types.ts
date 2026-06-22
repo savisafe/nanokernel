@@ -3,6 +3,7 @@ import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
 import type { SnippetSpec } from "../snippets/snippet.types";
 import type { ScriptSpec } from "./v2/bot-config-v2.types";
 import type { SafetyCategory } from "../safety/safety.types";
+import type { SkillTrust } from "../skills/skill.contract";
 
 export interface ResolvedBusinessService {
   name: string;
@@ -33,6 +34,13 @@ export interface ResolvedBotLlmSettings {
   toolCalling?: "auto" | "off";
   /** Сколько последних сообщений истории передавать LLM. Имеет приоритет над env LLM_CONTEXT_MESSAGES. */
   contextMessages?: number;
+  /** Суммаризационная компакция контекста (см. ContextCompactionService). Выкл. по умолчанию. */
+  compaction?: {
+    enabled?: boolean;
+    keepRecentMessages?: number;
+    maxFetchMessages?: number;
+    maxSummaryTokens?: number;
+  };
 }
 
 export interface ResolvedBurstLimit {
@@ -55,6 +63,8 @@ export interface ResolvedRepeatLimit {
 
 export interface ResolvedBotGuardrails {
   safetyChecks?: SafetyCategory[];
+  /** Разрешённые уровни доверия исполняемых навыков (см. BotConfig v2 guardrails.allowedSkillTrust). */
+  allowedSkillTrust?: SkillTrust[];
   refuseReply?: string;
   rateLimitReply?: string;
   llmFallbackReply?: string;

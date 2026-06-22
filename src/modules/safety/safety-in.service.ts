@@ -1,21 +1,26 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
+import { getLanguagePack } from "../language/language-registry";
+import type { LanguagePack, SafetyKeywordCategory } from "../language/language-pack.types";
 import { RateLimitService } from "./rate-limit.service";
 import { FloodProtectionService } from "./flood-protection.service";
-import { INJECTION_PATTERNS } from "./injection-patterns";
-import { SAFETY_KEYWORDS } from "./safety-keywords";
-import { DEFAULT_REFUSE_REPLIES, SafetyCategory, SafetyInResult } from "./safety.types";
+import { SafetyCategory, SafetyInResult } from "./safety.types";
 
 @Injectable()
 export class SafetyInService {
   private readonly logger = new Logger(SafetyInService.name);
-  // Скомпилированные регексы — общие на процесс (паттерны статичны).
-  private readonly injectionRegexes: RegExp[] = INJECTION_PATTERNS.map((p) => new RegExp(p, "iu"));
+  // Скомпилированные injection-регексы, кешированные по коду языка (паттерны статичны
+  // в пределах пака). Раньше компилировались один раз под единственный RU-набор.
+  private readonly injectionRegexCache = new Map<string, RegExp[]>();
 
   constructor(
     private readonly rateLimit: RateLimitService,
     private readonly flood: FloodProtectionService,
   ) {}
+
+  private langFor(bot: ResolvedBotConfiguration): LanguagePack {
+    return getLanguagePack(bot.promptProfile?.language);
+  }
 
   /**
    * Rate-limit проверяется отдельно от topic/injection, потому что обычно нужен
@@ -44,7 +49,7 @@ export class SafetyInService {
     return {
       blocked: true,
       category: "rate_limit",
-      reply: bot.guardrails?.rateLimitReply ?? DEFAULT_REFUSE_REPLIES.rate_limit,
+      reply: bot.guardrails?.rateLimitReply ?? this.langFor(bot).refuseReplies.rate_limit,
       matched: `${cfg.requests}/${cfg.windowSeconds}s`,
     };
   }
@@ -70,7 +75,7 @@ export class SafetyInService {
     return {
       blocked: true,
       category: "burst",
-      reply: cfg.reply ?? DEFAULT_REFUSE_REPLIES.burst,
+      reply: cfg.reply ?? this.langFor(bot).refuseReplies.burst,
       matched: r.reason,
       silent: cfg.silent ?? false,
     };
@@ -98,7 +103,7 @@ export class SafetyInService {
     return {
       blocked: true,
       category: "repeat",
-      reply: cfg.reply ?? DEFAULT_REFUSE_REPLIES.repeat,
+      reply: cfg.reply ?? this.langFor(bot).refuseReplies.repeat,
       matched: r.reason,
       silent: cfg.silent ?? false,
     };
@@ -110,26 +115,36 @@ export class SafetyInService {
     if (enabled.length === 0) {
       return { blocked: false };
     }
-    const normalized = userText.toLowerCase().replace(/ё/g, "е");
+    const lang = this.langFor(bot);
+    const normalized = lang.normalize(userText);
 
     if (enabled.includes("injection")) {
-      const hit = this.findInjection(normalized);
+      const hit = this.findInjection(normalized, lang);
       if (hit) {
-        return this.buildBlock("injection", hit, bot);
+        return this.buildBlock("injection", hit, bot, lang);
       }
     }
     for (const category of enabled) {
       if (category === "injection") continue;
-      const hit = this.findCategoryKeyword(normalized, category);
+      const hit = this.findCategoryKeyword(normalized, category, lang);
       if (hit) {
-        return this.buildBlock(category, hit, bot);
+        return this.buildBlock(category, hit, bot, lang);
       }
     }
     return { blocked: false };
   }
 
-  private findInjection(text: string): string | undefined {
-    for (const re of this.injectionRegexes) {
+  private injectionRegexes(lang: LanguagePack): RegExp[] {
+    let cached = this.injectionRegexCache.get(lang.code);
+    if (!cached) {
+      cached = lang.injectionPatterns.map((p) => new RegExp(p, "iu"));
+      this.injectionRegexCache.set(lang.code, cached);
+    }
+    return cached;
+  }
+
+  private findInjection(text: string, lang: LanguagePack): string | undefined {
+    for (const re of this.injectionRegexes(lang)) {
       const match = re.exec(text);
       if (match) {
         return match[0];
@@ -138,9 +153,13 @@ export class SafetyInService {
     return undefined;
   }
 
-  private findCategoryKeyword(text: string, category: SafetyCategory): string | undefined {
+  private findCategoryKeyword(
+    text: string,
+    category: SafetyCategory,
+    lang: LanguagePack,
+  ): string | undefined {
     if (category === "injection") return undefined;
-    const dict = SAFETY_KEYWORDS[category];
+    const dict = lang.safetyKeywords[category as SafetyKeywordCategory];
     if (!dict) return undefined;
     for (const kw of dict) {
       if (text.includes(kw)) {
@@ -154,8 +173,9 @@ export class SafetyInService {
     category: SafetyCategory,
     matched: string,
     bot: ResolvedBotConfiguration,
+    lang: LanguagePack,
   ): SafetyInResult {
-    const reply = bot.guardrails?.refuseReply ?? DEFAULT_REFUSE_REPLIES[category];
+    const reply = bot.guardrails?.refuseReply ?? lang.refuseReplies[category];
     this.logger.warn(`safety block bot=${bot.id} category=${category} matched="${matched}"`);
     return { blocked: true, category, reply, matched };
   }

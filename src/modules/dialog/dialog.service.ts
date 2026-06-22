@@ -18,6 +18,9 @@ import { isDevelopment } from "../shared/is-development";
 import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
 import { resolveEffectiveDialog } from "./dialog-effective";
 import { interpolateTemplate } from "./dialog-template.utils";
+import { getLanguagePack } from "../language/language-registry";
+import type { LanguagePack } from "../language/language-pack.types";
+import { ContextCompactionService, ResolvedCompaction } from "./context-compaction.service";
 import {
   ChannelType,
   DialogDiagnosticChunk,
@@ -32,13 +35,6 @@ import {
 export class DialogService {
   private readonly logger = new Logger(DialogService.name);
 
-  private static readonly GLOBAL_KNOWLEDGE_REQUEST_PATTERNS: readonly RegExp[] = [
-    //TODO ru hardcode, move
-    /(?:^|[\s,.;:!?«»(])(пересказ|перескажи|суммарно|суммируй|кратко|резюме|выжимк|расскажи|опиши|объясни)(?:[\s,.;:!?»)]|$)/iu,
-    //TODO move magic link
-    /(^|\s)(summary|summarize|overview|tl;dr)(\s|$|[,.!?])/i,
-    /(?:^|[\s,.;:!?«»(])(о\s+ч[её]м\s+документ|что\s+за\s+документ)(?:[\s,.;:!?»)]|$)/iu,
-  ];
   private readonly effective: EffectiveDialogRuntime;
   private readonly knowledgeChunksCache = new Map<string, KnowledgeChunkRuntime[]>();
   private readonly tokenizationRuntimeCache = new Map<
@@ -58,6 +54,7 @@ export class DialogService {
     private readonly scriptRunner: ScriptRunnerService,
     private readonly safetyIn: SafetyInService,
     private readonly safetyOut: SafetyOutService,
+    private readonly contextCompaction: ContextCompactionService,
   ) {
     this.effective = resolveEffectiveDialog(this.botConfiguration.get());
   }
@@ -440,10 +437,14 @@ export class DialogService {
     }
 
     const contextLimit = this.getLlmContextMessageLimit(snap.bot);
+    const compaction = this.resolveCompaction(snap.bot, contextLimit);
+    // При включённой компакции тянем БОЛЬШЕ сообщений, чем окно — старое уйдёт в выжимку,
+    // а не будет слепо обрезано. Без компакции поведение прежнее (take = contextLimit).
+    const fetchLimit = compaction.enabled ? compaction.maxFetchMessages : contextLimit;
     const rows = await this.prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "desc" },
-      take: contextLimit,
+      take: fetchLimit,
     });
     rows.reverse();
 
@@ -459,16 +460,29 @@ export class DialogService {
     const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
     const knowledgeContext = retrieval.context;
 
+    const fullHistory: LlmChatMessage[] = contextRows.map((m) => ({
+      role: (m.role === "client" ? "user" : "assistant") as "user" | "assistant",
+      content: m.text,
+    }));
+
+    // Компакция: старая часть истории сжимается в системную выжимку, недавнее окно — дословно.
+    let history = fullHistory;
+    let summaryNote: string | undefined;
+    if (compaction.enabled) {
+      const composed = await this.contextCompaction.compose({
+        history: fullHistory,
+        keepRecent: compaction.keepRecentMessages,
+        maxSummaryTokens: compaction.maxSummaryTokens,
+        strings: getLanguagePack(snap.bot.promptProfile?.language).compaction,
+      });
+      history = composed.history;
+      summaryNote = composed.summaryNote;
+    }
+
     const systemBase = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
-    // Инжект контекста записи (собрано/нужно/реальные окна) — чтобы LLM вёл как менеджер.
-    const system = llmNote ? `${systemBase}\n\n${llmNote}` : systemBase;
-    const messages: LlmChatMessage[] = [
-      { role: "system", content: system },
-      ...contextRows.map((m) => ({
-        role: (m.role === "client" ? "user" : "assistant") as "user" | "assistant",
-        content: m.text,
-      })),
-    ];
+    // Системный промпт = база + (опц.) выжимка старого диалога + (опц.) контекст записи (FSM).
+    const system = [systemBase, summaryNote, llmNote].filter(Boolean).join("\n\n");
+    const messages: LlmChatMessage[] = [{ role: "system", content: system }, ...history];
 
     const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
     // FSM-only навыки (напр. book_slot) НЕ отдаём LLM как tools: их дёргает FSM
@@ -488,23 +502,22 @@ export class DialogService {
             messages,
             llmOptions,
             llmTools.map((s) => this.skills.toToolSpec(s)),
-            async (name, args) => {
-              const skill = this.skills.get(name);
-              if (!skill) {
-                return { error: `unknown skill "${name}"` };
-              }
-              const result = await skill.execute(args, {
-                botId: snap.bot.id,
-                conversationId,
-                channel,
-              });
-              if (isDevelopment()) {
-                this.logger.debug(
-                  `skill exec bot=${snap.bot.id} name=${name} args=${JSON.stringify(args)}`,
-                );
-              }
-              return result.data;
-            },
+            // Диспетчер замкнут на llmTools (allowlist бота): модель не может выполнить
+            // навык вне набора, даже если знает его имя. Policy по trust — defense-in-depth.
+            this.skills.makeDispatcher(
+              llmTools,
+              { botId: snap.bot.id, conversationId, channel },
+              {
+                ...(snap.bot.guardrails?.allowedSkillTrust
+                  ? { allowedTrust: snap.bot.guardrails.allowedSkillTrust }
+                  : {}),
+                onExecute: (name) => {
+                  if (isDevelopment()) {
+                    this.logger.debug(`skill exec bot=${snap.bot.id} name=${name}`);
+                  }
+                },
+              },
+            ),
           )
         : await this.llmService.complete(messages, llmOptions);
     if (out) {
@@ -633,6 +646,23 @@ export class DialogService {
     return Math.min(cfg.max, Math.max(cfg.min, Math.floor(n)));
   }
 
+  /** Резолвит параметры компакции для бота (выкл. по умолчанию — поведение прежнее). */
+  private resolveCompaction(
+    bot: ResolvedBotConfiguration,
+    contextLimit: number,
+  ): ResolvedCompaction {
+    const c = bot.llm?.compaction;
+    const enabled = c?.enabled ?? false;
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.floor(v)));
+    const keepRecentMessages = clamp(c?.keepRecentMessages ?? contextLimit, 2, 50);
+    return {
+      enabled,
+      keepRecentMessages,
+      maxFetchMessages: clamp(c?.maxFetchMessages ?? 200, keepRecentMessages, 500),
+      maxSummaryTokens: c?.maxSummaryTokens && c.maxSummaryTokens > 0 ? c.maxSummaryTokens : 256,
+    };
+  }
+
   private buildKnowledgeChunks(
     scopeText: string,
     chunkSize: number,
@@ -694,6 +724,7 @@ export class DialogService {
     const defaultTopK = rp.defaultTopK;
     const maxContextChars = rp.maxContextChars ?? 5000;
     const maxChunkChars = rp.maxChunkChars ?? 1400;
+    const lang = getLanguagePack(snap.bot.promptProfile?.language);
 
     const allowRag = snap.bot.useRag && this.ragService.isInitialized() && !snap.disableRag;
     if (allowRag) {
@@ -726,7 +757,7 @@ export class DialogService {
     }
     const queryTokens = this.tokenizeForRetrieval(userText, snap.bot);
     if (queryTokens.length === 0) {
-      if (this.isGlobalKnowledgeRequest(userText)) {
+      if (this.isGlobalKnowledgeRequest(userText, lang)) {
         return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
       }
       return { mode: "lexical", chunks: [] };
@@ -746,7 +777,7 @@ export class DialogService {
       .sort((a, b) => b.overlap - a.overlap || a.chunk.id - b.chunk.id);
 
     if (scored.length === 0) {
-      if (this.isGlobalKnowledgeRequest(userText)) {
+      if (this.isGlobalKnowledgeRequest(userText, lang)) {
         return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
       }
       return { mode: "lexical", chunks: [] };
@@ -837,51 +868,34 @@ export class DialogService {
     return parts.join(separator);
   }
 
-  private isGlobalKnowledgeRequest(userText: string): boolean {
-    const text = userText.trim().toLowerCase().replace(/ё/g, "е");
+  /**
+   * Эвристика «спрашивают про документ/базу целиком» (пересказ/резюме/«о чём это»).
+   * Логика языко-нейтральна — все паттерны и нормализация приходят из LanguagePack,
+   * выбранного по языку бота. Раньше regex'ы были захардкожены в ядре (ru).
+   */
+  private isGlobalKnowledgeRequest(userText: string, lang: LanguagePack): boolean {
+    const text = lang.normalize(userText).trim();
     if (!text) {
       return false;
     }
-    if (DialogService.GLOBAL_KNOWLEDGE_REQUEST_PATTERNS.some((pattern) => pattern.test(text))) {
+    const g = lang.globalKnowledge;
+    if (g.summaryTriggers.some((pattern) => pattern.test(text))) {
       return true;
     }
-
-    if (
-      //TODO ru hardcode
-      /(?:^|[\s,.;:!?«»(])(о\s+чем|о\s+чём|про\s+что|про\s+чём|на\s+чём|на\s+чем|что\s+за)\s+/iu.test(
-        text,
-      )
-    ) {
+    if (g.aboutLead.test(text)) {
       return true;
     }
-
-    const hasDocAnchor =
-      //TODO ru hardcode
-      /(?:^|[\s,.;:!?«»(])(документ|документа|документе|текст|текста|файл|файла|база|базу|материал|материалу|загружен|загрузил)(?:[\s,.;:!?»)]|$)/iu.test(
-        text,
-      );
-    const hasGlobalIntentVerb =
-      /(?:^|[\s,.;:!?«»(])(расскажи|опиши|объясни|суммируй|кратко|краткий|перескажи|summary|overview|tl;dr|что\s+за|о\s+чем|о\s+чём)(?:[\s,.;:!?»)]|$)/iu.test(
-        text,
-      );
-    if (hasDocAnchor && hasGlobalIntentVerb) {
+    if (g.docAnchor.test(text) && g.globalIntentVerb.test(text)) {
       return true;
     }
-
-    const maxLen = 140;
-    if (text.length <= maxLen) {
-      if (/^(как\s+дела|как\s+жизнь|как\s+поживаешь|что\s+нового)\s*[?.!]?$/iu.test(text)) {
+    if (text.length <= g.maxShortQueryLen) {
+      if (g.smallTalkExclusion.test(text)) {
         return false;
       }
-      const interrogativeLead =
-        /^(что|кто|где|когда|почему|зачем|сколько|какой|какая|какое|какие|чей|чья|чьё|чьи|как)\s+/iu.test(
-          text,
-        );
-      if (interrogativeLead) {
+      if (g.interrogativeLead.test(text)) {
         return true;
       }
     }
-
     return false;
   }
 

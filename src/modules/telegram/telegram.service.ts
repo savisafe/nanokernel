@@ -5,6 +5,9 @@ import { DialogService } from "../dialog/dialog.service";
 import { DialogOutput } from "../dialog/dialog.types";
 import { IdempotencyService } from "../idempotency/idempotency.service";
 import { isDevelopment } from "../shared/is-development";
+import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
+import type { ChannelAdapter } from "../channels/channel-adapter.contract";
+import type { DialogInboundJob } from "../dialog-queue/dialog-inbound-job.types";
 import type { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
 import { telegramBotAls, resolveTelegramToken } from "./telegram-bot-context";
 import {
@@ -15,7 +18,8 @@ import {
 } from "./telegram.types";
 
 @Injectable()
-export class TelegramService {
+export class TelegramService implements ChannelAdapter {
+  readonly channelId = "telegram" as const;
   private readonly logger = new Logger(TelegramService.name);
   /** Сериализация обработки входящих по chatId (защита от reorder при параллельных вебхуках). */
   private readonly inboundChains = new Map<number, Promise<void>>();
@@ -25,7 +29,30 @@ export class TelegramService {
     private readonly idempotencyService: IdempotencyService,
     @Inject(forwardRef(() => DialogQueueService))
     private readonly dialogQueueService: DialogQueueService,
+    private readonly botConfiguration: BotConfigurationService,
   ) {}
+
+  /**
+   * ChannelAdapter: путь воркера очереди. Резолвит бота по botId из job и
+   * запускает тяжёлую обработку. Раньше резолв бота делал сам воркер в switch'е.
+   */
+  async processInbound(job: DialogInboundJob): Promise<void> {
+    if (job.channel !== "telegram") {
+      return;
+    }
+    const bot = this.botConfiguration.resolveById(job.botId);
+    await this.processInboundQueued(job, bot);
+  }
+
+  /** ChannelAdapter: отправка текста (recipient — Telegram chatId строкой). */
+  async sendText(recipient: string, text: string): Promise<boolean> {
+    const chatId = Number(recipient);
+    if (!Number.isFinite(chatId)) {
+      this.logger.warn(`Telegram sendText: invalid recipient "${recipient}"`);
+      return false;
+    }
+    return (await this.sendMessage(chatId, text)) !== null;
+  }
 
   private static messageFromUpdate(
     payload: TelegramWebhookPayload,

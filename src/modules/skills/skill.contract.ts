@@ -16,6 +16,22 @@ export interface SkillResult {
   directReply?: string;
 }
 
+/**
+ * Уровень доверия навыка. Используется как defense-in-depth поверх allowlist'а
+ * (`bot.skills`): даже если конфиг включил навык, деплой может ограничить, навыки
+ * какого происхождения вообще исполнимы (`guardrails.allowedSkillTrust`).
+ *  - "builtin"     — поставляется в самом ядре (этот репозиторий);
+ *  - "community"   — проверенный community-pack;
+ *  - "third-party" — сторонний/непроверенный код.
+ * Навыки без явного `trust` считаются "builtin" (исторические in-repo навыки).
+ */
+export type SkillTrust = "builtin" | "community" | "third-party";
+
+/** Декларация возможностей навыка — для аудита и будущих policy-фильтров. */
+export type SkillCapability = "read" | "write" | "network" | "pii" | "calendar";
+
+export const DEFAULT_SKILL_TRUST: SkillTrust = "builtin";
+
 export interface Skill {
   /** Имя skill в snake_case — оно же name функции в payload OpenAI tools. */
   readonly name: string;
@@ -29,6 +45,10 @@ export interface Skill {
    * раздували tool-набор и не провоцировали маленькую модель на кривые tool_call.
    */
   readonly fsmOnly?: boolean;
+  /** Уровень доверия (origin). По умолчанию "builtin". */
+  readonly trust?: SkillTrust;
+  /** Что навык делает (для аудита/логов). Опционально. */
+  readonly capabilities?: readonly SkillCapability[];
   /** Выполнить skill с заранее разобранными аргументами. */
   execute(args: Record<string, unknown>, ctx: SkillContext): Promise<SkillResult>;
 }

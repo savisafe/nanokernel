@@ -75,6 +75,12 @@ const guardrailsSchema = z.object({
   safetyChecks: z
     .array(z.enum(["medical", "legal", "financial", "self_harm", "injection"]))
     .optional(),
+  /**
+   * Какого происхождения навыки разрешено ИСПОЛНЯТЬ (defense-in-depth поверх `skills`).
+   * Если не задано — исполняются любые включённые навыки (включение само по себе opt-in).
+   * Пример: ["builtin"] — даже если конфиг включил community/сторонний навык, ядро его не запустит.
+   */
+  allowedSkillTrust: z.array(z.enum(["builtin", "community", "third-party"])).optional(),
   /** Текст отказа при срабатывании safety-чека (любой категории кроме rate_limit). */
   refuseReply: z.string().min(1).optional(),
   /** Текст отказа при срабатывании rate-limit. */
@@ -160,6 +166,21 @@ const llmSchema = z.object({
   contextMessages: z.number().int().min(2).max(50).optional(),
   /** "off" — не давать LLM function-calling (skills дёргает FSM/роутер). По умолчанию "auto". */
   toolCalling: z.enum(["auto", "off"]).optional(),
+  /**
+   * Суммаризационная компакция контекста: вместо слепой обрезки старое сжимается в выжимку.
+   * Выключено по умолчанию. Полезно для длинных диалогов на маленьких моделях (4–8k).
+   */
+  compaction: z
+    .object({
+      enabled: z.boolean().optional(),
+      /** Сколько последних сообщений оставить дословно. По умолчанию = окно contextMessages. */
+      keepRecentMessages: z.number().int().min(2).max(50).optional(),
+      /** Верхняя граница на число сообщений, которые тянем из БД для компакции. */
+      maxFetchMessages: z.number().int().min(2).max(500).optional(),
+      /** Бюджет токенов на саму выжимку. */
+      maxSummaryTokens: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 
 const channelTelegramSchema = z.object({

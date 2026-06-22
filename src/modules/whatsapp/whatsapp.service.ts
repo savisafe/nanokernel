@@ -5,10 +5,13 @@ import { DialogQueueService } from "../dialog-queue/dialog-queue.service";
 import { DialogService } from "../dialog/dialog.service";
 import { IdempotencyService } from "../idempotency/idempotency.service";
 import { isDevelopment } from "../shared/is-development";
+import type { ChannelAdapter } from "../channels/channel-adapter.contract";
+import type { DialogInboundJob } from "../dialog-queue/dialog-inbound-job.types";
 import { IncomingWhatsAppMessage, WhatsAppWebhookPayload } from "./whatsapp.types";
 
 @Injectable()
-export class WhatsAppService {
+export class WhatsAppService implements ChannelAdapter {
+  readonly channelId = "whatsapp" as const;
   private readonly logger = new Logger(WhatsAppService.name);
   constructor(
     private readonly dialogService: DialogService,
@@ -16,6 +19,19 @@ export class WhatsAppService {
     @Inject(forwardRef(() => DialogQueueService))
     private readonly dialogQueueService: DialogQueueService,
   ) {}
+
+  /** ChannelAdapter: путь воркера очереди (WhatsApp использует env-конфиг, бот не резолвится). */
+  async processInbound(job: DialogInboundJob): Promise<void> {
+    if (job.channel !== "whatsapp") {
+      return;
+    }
+    await this.processInboundQueued(job);
+  }
+
+  /** ChannelAdapter: отправка текста (recipient — WhatsApp phone). */
+  sendText(recipient: string, text: string): Promise<boolean> {
+    return this.sendTextMessage(recipient, text);
+  }
 
   verifyWebhook(mode?: string, token?: string, challenge?: string): string | null {
     const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
