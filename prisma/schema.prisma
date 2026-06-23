@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ConversationStatus {
+  ACTIVE
+  CLOSED
+  HANDED_OFF
+}
+
+model User {
+  id            String         @id @default(cuid())
+  externalId    String
+  channel       String
+  displayName   String?
+  language      String         @default("ru")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+
+  @@unique([channel, externalId])
+}
+
+model Conversation {
+  id         String             @id @default(cuid())
+  userId     String
+  status     ConversationStatus @default(ACTIVE)
+  stage      String             @default("contact")
+  /// Имя активного скрипта (если в данный момент клиент в FSM). NULL когда диалог свободный.
+  activeScript      String?
+  /// Текущее состояние FSM: имя слота (`slot:service`) или служебное (`confirm`).
+  activeScriptState String?
+  /// Собранные значения слотов скрипта (key → value).
+  activeScriptSlots Json?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages   Message[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  role           String
+  text           String
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model ProcessedInboundMessage {
+  id                String   @id @default(cuid())
+  channel           String
+  /// chat-scope: Telegram chatId / WhatsApp from. Нужно потому, что provider'ские
+  /// messageId уникальны только в рамках чата.
+  scope             String   @default("")
+  externalMessageId String
+  createdAt         DateTime @default(now())
+
+  @@unique([channel, scope, externalMessageId])
+}
+
+/// Запись клиента (результат FSM-скрипта booking). Без FK на Conversation,
+/// чтобы аудит-записи сохранялись даже после удаления диалога.
+model Booking {
+  id              String   @id @default(cuid())
+  botId           String
+  conversationId  String?
+  service         String?
+  /// Имя мастера/исполнителя (FSM-слот master).
+  master          String?
+  date            String?
+  time            String?
+  name            String?
+  phone           String?
+  /// Стоимость записи (целое, минимальная единица валюты — напр. тенге); считается по услуге×мастеру.
+  amount          Int?
+  /// "confirmed" | "cancelled"
+  status          String   @default("confirmed")
+  /// id записи (appointment) в Mesto после синхронизации; null — ещё не синкнули.
+  mestoAppointmentId String?
+  /// id клиента в Mesto.
+  mestoClientId      String?
+  /// Статус синхронизации с Mesto: "pending" | "synced" | "failed".
+  syncStatus         String   @default("pending")
+  /// Когда успешно синхронизировали в Mesto.
+  syncedAt           DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([botId, createdAt])
+  @@index([phone])
+}
+
+/// События для observability и биллинга: каждый ход = одна запись.
+/// kind: 'snippet' (ответ без LLM), 'llm' (вызов модели), 'no_llm_fallback' (LLM выключен/упал), 'fsm' (FSM-шаг), 'safety_block'.
+model BotUsage {
+  id               String   @id @default(cuid())
+  botId            String
+  conversationId   String?
+  kind             String
+  snippetId        String?
+  promptTokens     Int?
+  completionTokens Int?
+  model            String?
+  createdAt        DateTime @default(now())
+
+  @@index([botId, createdAt])
+  @@index([createdAt])
+  @@index([botId, kind, createdAt])
+}

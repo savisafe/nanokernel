@@ -1,0 +1,914 @@
+import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "node:crypto";
+import { Prisma, User } from "@prisma/client";
+import { LlmChatMessage, LlmService } from "../llm/llm.service";
+import { PrismaService } from "../prisma/prisma.service";
+import { BotConfigurationService } from "../bot-configuration/bot-configuration.service";
+import { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
+import { PromptProfileService } from "../prompt-profile/prompt-profile.service";
+import { RagService } from "../rag/rag.service";
+import { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
+import { SnippetMatcherService } from "../snippets/snippet-matcher.service";
+import { BotUsageService } from "../bot-usage/bot-usage.service";
+import { SkillsRegistry } from "../skills/skills-registry.service";
+import { ScriptRunnerService } from "../scripts/script-runner.service";
+import { SafetyInService } from "../safety/safety-in.service";
+import { SafetyOutService } from "../safety/safety-out.service";
+import { isDevelopment } from "../shared/is-development";
+import type { DialogRetrievalPresentation, EffectiveDialogRuntime } from "./dialog.config.types";
+import { resolveEffectiveDialog } from "./dialog-effective";
+import { interpolateTemplate } from "./dialog-template.utils";
+import { getLanguagePack } from "../language/language-registry";
+import type { LanguagePack } from "../language/language-pack.types";
+import { ContextCompactionService, ResolvedCompaction } from "./context-compaction.service";
+import {
+  ChannelType,
+  DialogDiagnosticChunk,
+  DialogInput,
+  DialogOutput,
+  DialogOutputWithDiagnostics,
+  DialogRuntimeSnapshot,
+  KnowledgeChunkRuntime,
+} from "./dialog.types";
+
+@Injectable()
+export class DialogService {
+  private readonly logger = new Logger(DialogService.name);
+
+  private readonly effective: EffectiveDialogRuntime;
+  private readonly knowledgeChunksCache = new Map<string, KnowledgeChunkRuntime[]>();
+  private readonly tokenizationRuntimeCache = new Map<
+    string,
+    { regex: RegExp; stopWords: Set<string> }
+  >();
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly llmService: LlmService,
+    private readonly promptProfile: PromptProfileService,
+    private readonly botConfiguration: BotConfigurationService,
+    private readonly ragService: RagService,
+    private readonly snippetMatcher: SnippetMatcherService,
+    private readonly botUsage: BotUsageService,
+    private readonly skills: SkillsRegistry,
+    private readonly scriptRunner: ScriptRunnerService,
+    private readonly safetyIn: SafetyInService,
+    private readonly safetyOut: SafetyOutService,
+    private readonly contextCompaction: ContextCompactionService,
+  ) {
+    this.effective = resolveEffectiveDialog(this.botConfiguration.get());
+  }
+
+  composeSnapshot(
+    profile: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): DialogRuntimeSnapshot {
+    const knowledgeChunks = this.computeKnowledgeChunksForProfile(profile, bot);
+    return {
+      profile,
+      bot,
+      // template-режим v2: prefix/suffix не используются (весь промпт в systemPromptTemplate),
+      // поля оставлены в snapshot для backward compatibility типа.
+      llmSystemPromptPrefix: "",
+      llmSystemPromptSuffix: "",
+      knowledgeChunks,
+    };
+  }
+
+  private resolveRuntimeSnapshotForUser(_channel: ChannelType, _user: User): DialogRuntimeSnapshot {
+    // В multi-bot модели (Phase 7+) бот определяется URL-секретом вебхука, не per-user.
+    // selectedBotConfigurationId удалён в Phase 9b — пользовательский выбор больше не
+    // переопределяет глобальную сборку процесса/контекста.
+    const bot = this.botConfiguration.get();
+    const profile = this.promptProfile.resolveProfileForBot(bot);
+    return this.composeSnapshot(profile, bot);
+  }
+
+  /**
+   * Один ход диалога с диагностикой (system prompt, retrieval).
+   * Не используется вебхуками; для внутренней диагностики и тестов.
+   */
+  //TODO legacy, unuse, need add linter
+  async runDiagnosticTurn(
+    input: DialogInput,
+    snapshot: DialogRuntimeSnapshot,
+  ): Promise<DialogOutputWithDiagnostics> {
+    const { conversation } = await this.getOrCreateConversation(
+      input.channel,
+      input.externalUserId,
+    );
+
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: "client",
+        text: input.text,
+      },
+    });
+
+    const nextStage = conversation.stage;
+    const templateReply = this.buildReply(nextStage, input.text, snapshot);
+    const { replyText, diagnostics } = await this.tryLlmReplyWithDiagnostics(
+      conversation.id,
+      nextStage,
+      input.channel,
+      templateReply,
+      input.text,
+      snapshot,
+    );
+
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        stage: nextStage,
+        status: "ACTIVE",
+      },
+    });
+
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: "assistant",
+        text: replyText,
+      },
+    });
+
+    return { replyText, stage: nextStage, diagnostics };
+  }
+
+  async process(
+    input: DialogInput,
+    progress?: { onLlmTextDelta?: (text: string) => void | Promise<void> },
+  ): Promise<DialogOutput> {
+    const { conversation, user } = await this.getOrCreateConversation(
+      input.channel,
+      input.externalUserId,
+    );
+    const snap = this.resolveRuntimeSnapshotForUser(input.channel, user);
+
+    // Rate-limit раньше всего: защита от спама ДО записи сообщения в БД.
+    const rl = await this.safetyIn.checkRateLimit(input.channel, input.externalUserId, snap.bot);
+    if (rl.blocked && rl.reply) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "rate_limit");
+      return { replyText: rl.reply, stage: conversation.stage };
+    }
+
+    // Burst-детектор: плотность отправки (N сообщений за мс). Срабатывает раньше,
+    // чем суммарный rateLimit, чтобы поймать всплески внутри окна.
+    const burst = await this.safetyIn.checkBurst(input.channel, input.externalUserId, snap.bot);
+    if (burst.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "burst");
+      return {
+        replyText: burst.silent ? "" : (burst.reply ?? ""),
+        stage: conversation.stage,
+      };
+    }
+
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: "client",
+        text: input.text,
+      },
+    });
+
+    // Repeat-чек: ловит копипасту и циклический спам по нормализованному хешу.
+    // Идёт после сохранения в БД, чтобы повтор всё равно был виден в истории диалога.
+    const repeat = await this.safetyIn.checkRepeat(
+      input.channel,
+      input.externalUserId,
+      input.text,
+      snap.bot,
+    );
+    if (repeat.blocked) {
+      await this.botUsage.recordSafetyBlock(snap.bot.id, conversation.id, "repeat");
+      const replyText = repeat.silent ? "" : (repeat.reply ?? "");
+      if (replyText) {
+        await this.prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            role: "assistant",
+            text: replyText,
+          },
+        });
+      }
+      return { replyText, stage: conversation.stage };
+    }
+
+    // Content safety: injection + safety-topics. Запускается ДО FSM/snippet/LLM,
+    // чтобы перехватить попытки jailbreak / запрос мед/юр-консультации в любом состоянии.
+    const contentSafety = this.safetyIn.checkContent(input.text, snap.bot);
+    if (contentSafety.blocked && contentSafety.reply) {
+      await this.botUsage.recordSafetyBlock(
+        snap.bot.id,
+        conversation.id,
+        contentSafety.category ?? "injection",
+      );
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: contentSafety.reply,
+        },
+      });
+      return { replyText: contentSafety.reply, stage: conversation.stage };
+    }
+
+    const fsmOutcome = await this.scriptRunner.step({
+      conversation,
+      bot: snap.bot,
+      userText: input.text,
+    });
+    if (fsmOutcome.handled) {
+      if (isDevelopment()) {
+        this.logger.debug(
+          `fsm bot=${snap.bot.id} script=${fsmOutcome.scriptName} terminal=${fsmOutcome.terminal}`,
+        );
+      }
+      await this.botUsage.recordFsm(snap.bot.id, conversation.id, fsmOutcome.scriptName);
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: fsmOutcome.reply,
+        },
+      });
+      return { replyText: fsmOutcome.reply, stage: conversation.stage };
+    }
+
+    // Идёт запись (conversational-сценарий уступил ход): ведём диалог через LLM с контекстом
+    // записи (что собрано / что нужно / реальные окна календаря). Сниппеты не перехватывают —
+    // на вопросы клиента отвечает сам LLM по контексту, как живой менеджер.
+    const bookingNote = fsmOutcome.llmNote;
+    const snippetHit = bookingNote ? undefined : this.snippetMatcher.match(input.text, snap.bot);
+    if (snippetHit) {
+      if (isDevelopment()) {
+        this.logger.debug(`snippet hit bot=${snap.bot.id} id=${snippetHit.id} (no LLM call)`);
+      }
+      await this.botUsage.recordSnippet(snap.bot.id, conversation.id, snippetHit.id);
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { stage: conversation.stage, status: "ACTIVE" },
+      });
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: snippetHit.reply,
+        },
+      });
+      return { replyText: snippetHit.reply, stage: conversation.stage };
+    }
+
+    const nextStage = conversation.stage;
+    const templateReply = this.buildReply(nextStage, input.text, snap);
+    const llmReply = await this.tryLlmReply(
+      conversation.id,
+      nextStage,
+      input.channel,
+      templateReply,
+      input.text,
+      snap,
+      progress?.onLlmTextDelta,
+      bookingNote,
+    );
+    const safeOut = this.safetyOut.apply(llmReply.replyText, snap.bot);
+    const replyText = safeOut.text;
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        stage: nextStage,
+        status: "ACTIVE",
+      },
+    });
+
+    // Битый ответ (фолбэк / обрезанный finish_reason=length) клиенту отправляем, но в историю
+    // НЕ пишем: иначе он копится и сам ломает следующие ходы маленькой модели (спираль «техсбоев»).
+    if (!llmReply.degraded) {
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          text: replyText,
+        },
+      });
+    }
+
+    return { replyText, stage: nextStage };
+  }
+
+  private effectiveFor(bot: ResolvedBotConfiguration): EffectiveDialogRuntime {
+    if (bot.id === this.botConfiguration.get().id) {
+      return this.effective;
+    }
+    return resolveEffectiveDialog(bot);
+  }
+
+  private tokenizationRuntime(bot: ResolvedBotConfiguration): {
+    regex: RegExp;
+    stopWords: Set<string>;
+  } {
+    let cached = this.tokenizationRuntimeCache.get(bot.id);
+    if (!cached) {
+      const eff = this.effectiveFor(bot);
+      cached = {
+        regex: new RegExp(eff.tokenization.splitPattern, eff.tokenization.splitFlags),
+        stopWords: new Set(eff.tokenization.stopWords),
+      };
+      this.tokenizationRuntimeCache.set(bot.id, cached);
+    }
+    return cached;
+  }
+
+  private async getOrCreateConversation(channel: string, externalUserId: string) {
+    const user = await this.getOrCreateUser(channel, externalUserId);
+
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        userId: user.id,
+        status: "ACTIVE",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (conversation) {
+      return { user, conversation };
+    }
+
+    const createdConversation = await this.prisma.conversation.create({
+      data: { userId: user.id },
+    });
+
+    return { user, conversation: createdConversation };
+  }
+
+  private async getOrCreateUser(channel: string, externalUserId: string) {
+    const existing = await this.prisma.user.findFirst({
+      where: { channel, externalId: externalUserId },
+    });
+    if (existing) {
+      return existing;
+    }
+    try {
+      return await this.prisma.user.create({
+        data: { channel, externalId: externalUserId },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+        const retry = await this.prisma.user.findFirst({
+          where: { channel, externalId: externalUserId },
+        });
+        if (retry) {
+          return retry;
+        }
+      }
+      throw e;
+    }
+  }
+
+  private buildReply(stage: string, clientText: string, snap: DialogRuntimeSnapshot): string {
+    const { templateStages } = this.effectiveFor(snap.bot);
+    const selected = templateStages[stage] ?? templateStages.contact;
+    if (!selected) {
+      return clientText;
+    }
+    return selected.replyLines.map((line) => line.replace("{clientText}", clientText)).join("\n");
+  }
+
+  private async tryLlmReply(
+    conversationId: string,
+    stage: string,
+    channel: ChannelType,
+    templateFallback: string,
+    userText: string,
+    snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
+    llmNote?: string,
+  ): Promise<{ replyText: string; degraded: boolean }> {
+    const r = await this.tryLlmReplyCore(
+      conversationId,
+      stage,
+      channel,
+      templateFallback,
+      userText,
+      snap,
+      onTextDelta,
+      llmNote,
+    );
+    return { replyText: r.replyText, degraded: r.degraded };
+  }
+
+  private async tryLlmReplyWithDiagnostics(
+    conversationId: string,
+    stage: string,
+    channel: ChannelType,
+    templateFallback: string,
+    userText: string,
+    snap: DialogRuntimeSnapshot,
+  ): Promise<{ replyText: string; diagnostics: DialogOutputWithDiagnostics["diagnostics"] }> {
+    return this.tryLlmReplyCore(conversationId, stage, channel, templateFallback, userText, snap);
+  }
+
+  private async tryLlmReplyCore(
+    conversationId: string,
+    stage: string,
+    channel: ChannelType,
+    templateFallback: string,
+    userText: string,
+    snap: DialogRuntimeSnapshot,
+    onTextDelta?: (text: string) => void | Promise<void>,
+    llmNote?: string,
+  ): Promise<{
+    replyText: string;
+    degraded: boolean;
+    diagnostics: DialogOutputWithDiagnostics["diagnostics"];
+  }> {
+    // Per-bot override победит дефолтный templateFallback. Это даёт каждому боту
+    // возможность держать персону даже в моменты, когда LLM падает/таймаутится.
+    const llmFallback = snap.bot.guardrails?.llmFallbackReply ?? templateFallback;
+
+    if (!this.llmService.isEnabled()) {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
+      return {
+        replyText: llmFallback,
+        degraded: true,
+        diagnostics: await this.buildDiagnosticsForDisabledLlm(snap, stage, channel),
+      };
+    }
+
+    const contextLimit = this.getLlmContextMessageLimit(snap.bot);
+    const compaction = this.resolveCompaction(snap.bot, contextLimit);
+    // При включённой компакции тянем БОЛЬШЕ сообщений, чем окно — старое уйдёт в выжимку,
+    // а не будет слепо обрезано. Без компакции поведение прежнее (take = contextLimit).
+    const fetchLimit = compaction.enabled ? compaction.maxFetchMessages : contextLimit;
+    const rows = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "desc" },
+      take: fetchLimit,
+    });
+    rows.reverse();
+
+    // Не кормим модель её же фолбэками («техсбой»): они копятся в истории и отравляют
+    // генерацию — маленькая модель начинает отвечать пусто (finish_reason=length) даже
+    // без tools, что плодит новые фолбэки. Чистим их из контекста (для LLM, не из БД).
+    const fbPrefix = snap.bot.guardrails?.llmFallbackReply?.split("{")[0]?.trim();
+    const contextRows =
+      fbPrefix && fbPrefix.length > 0
+        ? rows.filter((m) => !(m.role === "assistant" && m.text.startsWith(fbPrefix)))
+        : rows;
+
+    const retrieval = await this.retrieveKnowledgeContextDetailed(userText, snap);
+    const knowledgeContext = retrieval.context;
+
+    const fullHistory: LlmChatMessage[] = contextRows.map((m) => ({
+      role: (m.role === "client" ? "user" : "assistant") as "user" | "assistant",
+      content: m.text,
+    }));
+
+    // Компакция: старая часть истории сжимается в системную выжимку, недавнее окно — дословно.
+    let history = fullHistory;
+    let summaryNote: string | undefined;
+    if (compaction.enabled) {
+      const composed = await this.contextCompaction.compose({
+        history: fullHistory,
+        keepRecent: compaction.keepRecentMessages,
+        maxSummaryTokens: compaction.maxSummaryTokens,
+        strings: getLanguagePack(snap.bot.promptProfile?.language).compaction,
+      });
+      history = composed.history;
+      summaryNote = composed.summaryNote;
+    }
+
+    const systemBase = this.buildSystemPrompt(stage, channel, knowledgeContext, snap);
+    // Системный промпт = база + (опц.) выжимка старого диалога + (опц.) контекст записи (FSM).
+    const system = [systemBase, summaryNote, llmNote].filter(Boolean).join("\n\n");
+    const messages: LlmChatMessage[] = [{ role: "system", content: system }, ...history];
+
+    const enabledSkills = this.skills.resolveForBot(snap.bot.skills);
+    // FSM-only навыки (напр. book_slot) НЕ отдаём LLM как tools: их дёргает FSM
+    // напрямую (registry.get), а лишние/тяжёлые tools провоцируют маленькую модель
+    // на пустой ответ (finish_reason=length) → фолбэк «техсбой».
+    // llm.toolCalling:"off" — LLM вообще без tools (чистый текст, работает на любой
+    // модели); навыки тогда дёргает только FSM/роутер (инверсия управления).
+    const llmTools =
+      snap.bot.llm?.toolCalling === "off" ? [] : enabledSkills.filter((s) => !s.fsmOnly);
+    const llmOptions = {
+      ...(snap.bot.llm ?? {}),
+      ...(onTextDelta ? { onTextDelta } : {}),
+    };
+    const out =
+      llmTools.length > 0
+        ? await this.llmService.completeWithTools(
+            messages,
+            llmOptions,
+            llmTools.map((s) => this.skills.toToolSpec(s)),
+            // Диспетчер замкнут на llmTools (allowlist бота): модель не может выполнить
+            // навык вне набора, даже если знает его имя. Policy по trust — defense-in-depth.
+            this.skills.makeDispatcher(
+              llmTools,
+              { botId: snap.bot.id, conversationId, channel },
+              {
+                ...(snap.bot.guardrails?.allowedSkillTrust
+                  ? { allowedTrust: snap.bot.guardrails.allowedSkillTrust }
+                  : {}),
+                onExecute: (name) => {
+                  if (isDevelopment()) {
+                    this.logger.debug(`skill exec bot=${snap.bot.id} name=${name}`);
+                  }
+                },
+              },
+            ),
+          )
+        : await this.llmService.complete(messages, llmOptions);
+    if (out) {
+      await this.botUsage.recordLlm(snap.bot.id, conversationId, out.usage, out.model);
+      if (isDevelopment()) {
+        const p = out.usage?.promptTokens ?? "?";
+        const c = out.usage?.completionTokens ?? "?";
+        this.logger.debug(
+          `llm call bot=${snap.bot.id} tokens=${p}/${c} model=${out.model ?? "?"} tools=${llmTools.length}`,
+        );
+      }
+    } else {
+      await this.botUsage.recordNoLlmFallback(snap.bot.id, conversationId);
+      this.logger.warn(
+        `LLM returned null (bot=${snap.bot.id}, conv=${conversationId}) — falling back to ${
+          snap.bot.guardrails?.llmFallbackReply ? "per-bot llmFallbackReply" : "template default"
+        }`,
+      );
+    }
+    const replyText = out?.text ?? llmFallback;
+    // «Битый» = модель не дала ВООБЩЕ никакого текста (out === null → отдаём фолбэк-нудж).
+    // Только такой ответ не сохраняем в историю. Обрезанный по лимиту, но С ТЕКСТОМ — СОХРАНЯЕМ:
+    // иначе теряется контекст и следующая реплика клиента («давай») повисает без привязки.
+    const degraded = !out;
+    return {
+      replyText,
+      degraded,
+      diagnostics: {
+        systemPrompt: system,
+        knowledgeContext,
+        chunks: retrieval.chunks,
+        retrievalMode: retrieval.mode,
+      },
+    };
+  }
+
+  private async buildDiagnosticsForDisabledLlm(
+    snap: DialogRuntimeSnapshot,
+    stage: string,
+    channel: ChannelType,
+  ): Promise<DialogOutputWithDiagnostics["diagnostics"]> {
+    const system = this.buildSystemPrompt(stage, channel, undefined, snap);
+    return { systemPrompt: system, chunks: [], retrievalMode: "none" };
+  }
+
+  private computeKnowledgeChunksForProfile(
+    p: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
+    if (!p.scopeText || p.scopeText.trim().length === 0) {
+      return [];
+    }
+    return this.getCachedKnowledgeChunksForScope(p.scopeText, p, bot);
+  }
+
+  private getCachedKnowledgeChunksForScope(
+    scopeText: string,
+    p: ResolvedLlmPromptProfile,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
+    const scope = scopeText.trim();
+    if (!scope) {
+      return [];
+    }
+    const defaults = this.effectiveFor(bot).chunkDefaults;
+    const chunkSize = p.retrievalChunkSize ?? defaults.chunkSize;
+    const overlap = Math.min(
+      p.retrievalChunkOverlap ?? defaults.overlap,
+      Math.max(0, chunkSize - defaults.overlapClampSubtract),
+    );
+    const scopeHash = createHash("sha256").update(scope).digest("hex");
+    const cacheKey = `${bot.id}:${chunkSize}:${overlap}:${scopeHash}`;
+    const cached = this.knowledgeChunksCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const built = this.buildKnowledgeChunks(scope, chunkSize, overlap, bot);
+    this.knowledgeChunksCache.set(cacheKey, built);
+    const maxCacheEntries = 100;
+    if (this.knowledgeChunksCache.size > maxCacheEntries) {
+      const firstKey = this.knowledgeChunksCache.keys().next().value;
+      if (firstKey) {
+        this.knowledgeChunksCache.delete(firstKey);
+      }
+    }
+    return built;
+  }
+
+  private buildSystemPrompt(
+    stage: string,
+    channel: ChannelType,
+    knowledgeContext: string | undefined,
+    snap: DialogRuntimeSnapshot,
+  ): string {
+    const eff = this.effectiveFor(snap.bot);
+    const knowledgeBlockRaw = knowledgeContext ?? "";
+    const stageLine = snap.profile.openTopicsMode
+      ? eff.stageFrame.openTopicsStageLine
+      : interpolateTemplate(eff.stageFrame.funnelStageLineTemplate, { stage });
+    return interpolateTemplate(eff.systemPromptTemplate, {
+      knowledgeBlock: knowledgeBlockRaw,
+      channel,
+      stage,
+      stageLine,
+      prefix: snap.llmSystemPromptPrefix,
+      suffix: snap.llmSystemPromptSuffix,
+    });
+  }
+
+  /** Сколько последних сообщений диалога отдавать в LLM (меньше — быстрее префилл и инференс). */
+  private getLlmContextMessageLimit(bot: ResolvedBotConfiguration): number {
+    const cfg = this.effectiveFor(bot).llmContextMessages;
+    // Per-bot llm.contextMessages (configuration.json) имеет приоритет над env LLM_CONTEXT_MESSAGES.
+    const perBot = bot.llm?.contextMessages;
+    if (perBot !== undefined && Number.isFinite(perBot)) {
+      return Math.min(cfg.max, Math.max(cfg.min, Math.floor(perBot)));
+    }
+    const raw = process.env[cfg.envVarName]?.trim();
+    if (raw === undefined || raw === "") {
+      return cfg.defaultLimit;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      return cfg.defaultLimit;
+    }
+    return Math.min(cfg.max, Math.max(cfg.min, Math.floor(n)));
+  }
+
+  /** Резолвит параметры компакции для бота (выкл. по умолчанию — поведение прежнее). */
+  private resolveCompaction(
+    bot: ResolvedBotConfiguration,
+    contextLimit: number,
+  ): ResolvedCompaction {
+    const c = bot.llm?.compaction;
+    const enabled = c?.enabled ?? false;
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.floor(v)));
+    const keepRecentMessages = clamp(c?.keepRecentMessages ?? contextLimit, 2, 50);
+    return {
+      enabled,
+      keepRecentMessages,
+      maxFetchMessages: clamp(c?.maxFetchMessages ?? 200, keepRecentMessages, 500),
+      maxSummaryTokens: c?.maxSummaryTokens && c.maxSummaryTokens > 0 ? c.maxSummaryTokens : 256,
+    };
+  }
+
+  private buildKnowledgeChunks(
+    scopeText: string,
+    chunkSize: number,
+    overlap: number,
+    bot: ResolvedBotConfiguration,
+  ): KnowledgeChunkRuntime[] {
+    const normalized = scopeText.replace(/\r\n/g, "\n").trim();
+    if (!normalized) {
+      return [];
+    }
+
+    const chunks: KnowledgeChunkRuntime[] = [];
+    let start = 0;
+    let id = 1;
+    while (start < normalized.length) {
+      const end = Math.min(normalized.length, start + chunkSize);
+      const cut = this.findChunkBoundary(normalized, start, end, bot);
+      const text = normalized.slice(start, cut).trim();
+      if (text.length > 0) {
+        chunks.push({ id, text, tokens: new Set(this.tokenizeForRetrieval(text, bot)) });
+        id += 1;
+      }
+      if (cut >= normalized.length) {
+        break;
+      }
+      start = Math.max(cut - overlap, start + 1);
+    }
+    return chunks;
+  }
+
+  private findChunkBoundary(
+    text: string,
+    start: number,
+    targetEnd: number,
+    bot: ResolvedBotConfiguration,
+  ): number {
+    const { breakpoints, minAdvanceChars } = this.effectiveFor(bot).chunkBoundaries;
+    if (targetEnd >= text.length) {
+      return text.length;
+    }
+    for (const point of breakpoints) {
+      const idx = text.lastIndexOf(point, targetEnd);
+      if (idx > start + minAdvanceChars) {
+        return idx + point.length;
+      }
+    }
+    return targetEnd;
+  }
+
+  private async retrieveKnowledgeContextDetailed(
+    userText: string,
+    snap: DialogRuntimeSnapshot,
+  ): Promise<{
+    context?: string;
+    mode: "none" | "lexical" | "rag";
+    chunks: DialogDiagnosticChunk[];
+  }> {
+    const rp = this.effectiveFor(snap.bot).retrievalPresentation;
+    const defaultTopK = rp.defaultTopK;
+    const maxContextChars = rp.maxContextChars ?? 5000;
+    const maxChunkChars = rp.maxChunkChars ?? 1400;
+    const lang = getLanguagePack(snap.bot.promptProfile?.language);
+
+    const allowRag = snap.bot.useRag && this.ragService.isInitialized() && !snap.disableRag;
+    if (allowRag) {
+      const topK = snap.profile.retrievalTopK ?? defaultTopK;
+      const results = await this.ragService.search(userText, topK);
+      if (results.length > 0) {
+        const formatted = this.formatRetrievedContext(
+          results.map((r) =>
+            interpolateTemplate(rp.ragScoreLineTemplate, {
+              scorePercent: (r.score * 100).toFixed(1),
+              text: this.trimRetrievedChunkText(r.text, maxChunkChars),
+            }),
+          ),
+          rp.chunkJoinSeparator,
+          maxContextChars,
+        );
+        return {
+          mode: "rag",
+          context: formatted,
+          chunks: results.map((r) => ({ text: r.text, score: r.score })),
+        };
+      }
+      if (snap.knowledgeChunks.length === 0) {
+        return { mode: "rag", chunks: [] };
+      }
+    }
+
+    if (snap.knowledgeChunks.length === 0) {
+      return { mode: "none", chunks: [] };
+    }
+    const queryTokens = this.tokenizeForRetrieval(userText, snap.bot);
+    if (queryTokens.length === 0) {
+      if (this.isGlobalKnowledgeRequest(userText, lang)) {
+        return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
+      }
+      return { mode: "lexical", chunks: [] };
+    }
+    const querySet = new Set(queryTokens);
+    const scored = snap.knowledgeChunks
+      .map((chunk) => {
+        let overlap = 0;
+        for (const token of querySet) {
+          if (chunk.tokens.has(token)) {
+            overlap += 1;
+          }
+        }
+        return { chunk, overlap };
+      })
+      .filter((x) => x.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap || a.chunk.id - b.chunk.id);
+
+    if (scored.length === 0) {
+      if (this.isGlobalKnowledgeRequest(userText, lang)) {
+        return this.lexicalIntroChunksFromStartOfBase(snap, rp, maxContextChars, maxChunkChars);
+      }
+      return { mode: "lexical", chunks: [] };
+    }
+
+    const topK = snap.profile.retrievalTopK ?? defaultTopK;
+    const top = scored.slice(0, topK);
+    const formatted = this.formatRetrievedContext(
+      top.map((x) =>
+        interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+          id: x.chunk.id,
+          overlap: x.overlap,
+          text: this.trimRetrievedChunkText(x.chunk.text, maxChunkChars),
+        }),
+      ),
+      rp.chunkJoinSeparator,
+      maxContextChars,
+    );
+    return {
+      mode: "lexical",
+      context: formatted,
+      chunks: top.map((x) => ({ id: x.chunk.id, text: x.chunk.text, overlap: x.overlap })),
+    };
+  }
+
+  private lexicalIntroChunksFromStartOfBase(
+    snap: DialogRuntimeSnapshot,
+    rp: DialogRetrievalPresentation,
+    maxContextChars: number,
+    maxChunkChars: number,
+  ): { context?: string; mode: "lexical"; chunks: DialogDiagnosticChunk[] } {
+    const topK = snap.profile.retrievalTopK ?? rp.defaultTopK;
+    const top = snap.knowledgeChunks.slice(0, topK);
+    if (top.length === 0) {
+      return { mode: "lexical", chunks: [] };
+    }
+    const formatted = this.formatRetrievedContext(
+      top.map((x) =>
+        interpolateTemplate(rp.lexicalFragmentLineTemplate, {
+          id: x.id,
+          overlap: 0,
+          text: this.trimRetrievedChunkText(x.text, maxChunkChars),
+        }),
+      ),
+      rp.chunkJoinSeparator,
+      maxContextChars,
+    );
+    return {
+      mode: "lexical",
+      context: formatted,
+      chunks: top.map((x) => ({ id: x.id, text: x.text, overlap: 0 })),
+    };
+  }
+
+  private trimRetrievedChunkText(text: string, maxChunkChars: number): string {
+    const normalized = text.trim();
+    if (normalized.length <= maxChunkChars) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, maxChunkChars - 1)).trimEnd()}…`;
+  }
+
+  private formatRetrievedContext(
+    fragments: string[],
+    separator: string,
+    maxContextChars: number,
+  ): string | undefined {
+    if (fragments.length === 0) {
+      return undefined;
+    }
+    const parts: string[] = [];
+    let size = 0;
+    for (const fragment of fragments) {
+      const piece = fragment.trim();
+      if (!piece) {
+        continue;
+      }
+      const extra = (parts.length > 0 ? separator.length : 0) + piece.length;
+      if (size + extra > maxContextChars) {
+        break;
+      }
+      parts.push(piece);
+      size += extra;
+    }
+    if (parts.length === 0) {
+      return undefined;
+    }
+    return parts.join(separator);
+  }
+
+  /**
+   * Эвристика «спрашивают про документ/базу целиком» (пересказ/резюме/«о чём это»).
+   * Логика языко-нейтральна — все паттерны и нормализация приходят из LanguagePack,
+   * выбранного по языку бота. Раньше regex'ы были захардкожены в ядре (ru).
+   */
+  private isGlobalKnowledgeRequest(userText: string, lang: LanguagePack): boolean {
+    const text = lang.normalize(userText).trim();
+    if (!text) {
+      return false;
+    }
+    const g = lang.globalKnowledge;
+    if (g.summaryTriggers.some((pattern) => pattern.test(text))) {
+      return true;
+    }
+    if (g.aboutLead.test(text)) {
+      return true;
+    }
+    if (g.docAnchor.test(text) && g.globalIntentVerb.test(text)) {
+      return true;
+    }
+    if (text.length <= g.maxShortQueryLen) {
+      if (g.smallTalkExclusion.test(text)) {
+        return false;
+      }
+      if (g.interrogativeLead.test(text)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private tokenizeForRetrieval(text: string, bot: ResolvedBotConfiguration): string[] {
+    const eff = this.effectiveFor(bot);
+    const minLen = eff.tokenization.minTokenLength;
+    const { regex, stopWords } = this.tokenizationRuntime(bot);
+    const raw = text
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(regex)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= minLen);
+    return raw.filter((t) => !stopWords.has(t));
+  }
+}
