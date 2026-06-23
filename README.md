@@ -33,6 +33,7 @@ A new bot is a JSON config, not a code change.
 ## Documentation
 
 - [Skills & MCP](docs/skills-and-mcp.md) — built-in skills and plugging in external skills via the MCP standard (ready-made or custom servers), with per-bot trust & capability gating.
+- [AI-programmer agent](docs/ai-programmer.md) — a first non-salon agent: the custom `dev` MCP server (files, shell, search, git), its config, and the HTTP channel that drives it.
 
 ## Tech stack
 

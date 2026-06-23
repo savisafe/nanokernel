@@ -15,6 +15,7 @@ import { SkillsModule } from "./skills/skills.module";
 import { ScriptsModule } from "./scripts/scripts.module";
 import { SafetyModule } from "./safety/safety.module";
 import { McpModule } from "./mcp/mcp.module";
+import { HttpChannelModule } from "./http-channel/http-channel.module";
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { McpModule } from "./mcp/mcp.module";
     WhatsAppModule,
     TelegramModule,
     RagModule,
+    HttpChannelModule,
   ],
 })
 export class AppModule {}

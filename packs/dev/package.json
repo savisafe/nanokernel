@@ -1,0 +1,17 @@
+{
+  "name": "@nanokernel/pack-dev",
+  "version": "0.1.0",
+  "description": "Custom MCP server: developer skills (files, shell, search, git) for the AI-programmer agent. Jailed to DEV_WORKSPACE_ROOT.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "nanokernel-pack-dev": "./index.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "developer-tools"
+  ]
+}

@@ -1,7 +1,7 @@
 import type { ResolvedBotConfiguration } from "../bot-configuration/bot-configuration.types";
 import type { ResolvedLlmPromptProfile } from "../prompt-profile/prompt-profile.types";
 
-export type ChannelType = "telegram" | "whatsapp";
+export type ChannelType = "telegram" | "whatsapp" | "http";
 
 export interface DialogInput {
   channel: ChannelType;
