@@ -20,3 +20,7 @@ coverage/
 !/CODE_OF_CONDUCT.md
 !/CHANGELOG.md
 !/.github/**/*.md
+!/docs/**/*.md
+
+# Generated codebase-analysis artifacts (understand-anything), not source.
+.understand-anything/

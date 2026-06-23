@@ -511,6 +511,9 @@ export class DialogService {
                 ...(snap.bot.guardrails?.allowedSkillTrust
                   ? { allowedTrust: snap.bot.guardrails.allowedSkillTrust }
                   : {}),
+                ...(snap.bot.guardrails?.allowedCapabilities
+                  ? { allowedCapabilities: snap.bot.guardrails.allowedCapabilities }
+                  : {}),
                 onExecute: (name) => {
                   if (isDevelopment()) {
                     this.logger.debug(`skill exec bot=${snap.bot.id} name=${name}`);

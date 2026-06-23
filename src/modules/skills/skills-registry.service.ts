@@ -4,6 +4,7 @@ import {
   LlmToolSpec,
   SKILL_PROVIDERS_TOKEN,
   Skill,
+  SkillCapability,
   SkillContext,
   SkillTrust,
 } from "./skill.contract";
@@ -67,8 +68,11 @@ export class SkillsRegistry {
    *
    * Это контур доверия: модель (или prompt-injection, повторивший имя известного навыка)
    * не может выполнить навык, не включённый для этого бота — диспетчер ищет навык только
-   * среди `allowed`, а не в глобальном реестре. Дополнительно — policy по trust:
-   * если задан `allowedTrust`, навыки иного происхождения блокируются, даже будучи в allowlist'е.
+   * среди `allowed`, а не в глобальном реестре. Дополнительно — две policy:
+   *  - по trust (`allowedTrust`): навыки иного происхождения блокируются;
+   *  - по capabilities (`allowedCapabilities`): если задан, навык с возможностью вне
+   *    разрешённого набора (напр. `write`/`network` у third-party MCP-инструмента)
+   *    блокируется, даже будучи в allowlist'е. Особенно важно для внешних MCP/pack-скиллов.
    *
    * Неизвестный/заблокированный вызов не бросает, а возвращает `{ error }` — он уходит
    * в LLM как tool-результат, и модель формулирует корректный отказ вместо «техсбоя».
@@ -76,10 +80,15 @@ export class SkillsRegistry {
   makeDispatcher(
     allowed: readonly Skill[],
     ctx: SkillContext,
-    options?: { allowedTrust?: readonly SkillTrust[]; onExecute?: (name: string) => void },
+    options?: {
+      allowedTrust?: readonly SkillTrust[];
+      allowedCapabilities?: readonly SkillCapability[];
+      onExecute?: (name: string) => void;
+    },
   ): SkillToolDispatcher {
     const byName = new Map(allowed.map((s) => [s.name, s]));
     const allowedTrust = options?.allowedTrust;
+    const allowedCapabilities = options?.allowedCapabilities;
     return async (name, args) => {
       const skill = byName.get(name);
       if (!skill) {
@@ -95,6 +104,18 @@ export class SkillsRegistry {
             `not in [${allowedTrust.join(", ")}] (bot=${ctx.botId}).`,
         );
         return { error: `skill "${name}" is blocked by the deployment trust policy` };
+      }
+      if (allowedCapabilities) {
+        const disallowed = (skill.capabilities ?? []).filter(
+          (c) => !allowedCapabilities.includes(c),
+        );
+        if (disallowed.length > 0) {
+          this.logger.warn(
+            `Skill call blocked by capability policy: "${name}" requires [${disallowed.join(", ")}] ` +
+              `outside allowed [${allowedCapabilities.join(", ")}] (bot=${ctx.botId}).`,
+          );
+          return { error: `skill "${name}" is blocked by the deployment capability policy` };
+        }
       }
       options?.onExecute?.(name);
       const result = await skill.execute(args, ctx);
