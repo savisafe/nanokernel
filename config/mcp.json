@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dev": {
+      "command": "node",
+      "args": ["packs/dev/index.mjs"],
+      "trust": "third-party"
+    }
+  }
+}
