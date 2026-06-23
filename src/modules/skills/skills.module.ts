@@ -1,4 +1,5 @@
 import { Global, Module } from "@nestjs/common";
+import { McpClientService } from "../mcp/mcp-client.service";
 import { DomainDataService } from "./domain-data.service";
 import { BookingNotifierService } from "./booking-notifier.service";
 import { MestoClientService } from "./mesto-client.service";
@@ -30,9 +31,16 @@ const SKILL_CLASSES = [
     BookingSyncService,
     ...SKILL_CLASSES,
     {
+      // Единая точка сборки скиллов: статические builtin (Nest-провайдеры) +
+      // внешние из MCP-серверов. Async-фабрика: Nest дожидается её до
+      // конструирования SkillsRegistry, поэтому реестр видит все скиллы
+      // одинаково (get() для FSM и makeDispatcher для LLM работают без правок).
       provide: SKILL_PROVIDERS_TOKEN,
-      useFactory: (...skills: Skill[]) => skills,
-      inject: [...SKILL_CLASSES],
+      useFactory: async (mcp: McpClientService, ...builtins: Skill[]) => {
+        const external = await mcp.loadSkills();
+        return [...builtins, ...external];
+      },
+      inject: [McpClientService, ...SKILL_CLASSES],
     },
     SkillsRegistry,
   ],

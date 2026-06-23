@@ -81,6 +81,12 @@ const guardrailsSchema = z.object({
    * Пример: ["builtin"] — даже если конфиг включил community/сторонний навык, ядро его не запустит.
    */
   allowedSkillTrust: z.array(z.enum(["builtin", "community", "third-party"])).optional(),
+  /**
+   * Какие возможности навыков разрешено ИСПОЛНЯТЬ (defense-in-depth поверх `skills`).
+   * Не задано — любые. Особенно важно для внешних MCP/pack-скиллов: напр. ["read"]
+   * разрешит только чтение, заблокировав `write`/`network`-инструменты даже из allowlist'а.
+   */
+  allowedCapabilities: z.array(z.enum(["read", "write", "network", "pii", "calendar"])).optional(),
   /** Текст отказа при срабатывании safety-чека (любой категории кроме rate_limit). */
   refuseReply: z.string().min(1).optional(),
   /** Текст отказа при срабатывании rate-limit. */

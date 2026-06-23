@@ -3,7 +3,7 @@ import type { DialogConfigFileJson } from "../dialog/dialog.config.types";
 import type { SnippetSpec } from "../snippets/snippet.types";
 import type { ScriptSpec } from "./v2/bot-config-v2.types";
 import type { SafetyCategory } from "../safety/safety.types";
-import type { SkillTrust } from "../skills/skill.contract";
+import type { SkillCapability, SkillTrust } from "../skills/skill.contract";
 
 export interface ResolvedBusinessService {
   name: string;
@@ -65,6 +65,8 @@ export interface ResolvedBotGuardrails {
   safetyChecks?: SafetyCategory[];
   /** Разрешённые уровни доверия исполняемых навыков (см. BotConfig v2 guardrails.allowedSkillTrust). */
   allowedSkillTrust?: SkillTrust[];
+  /** Разрешённые возможности исполняемых навыков (см. BotConfig v2 guardrails.allowedCapabilities). */
+  allowedCapabilities?: SkillCapability[];
   refuseReply?: string;
   rateLimitReply?: string;
   llmFallbackReply?: string;

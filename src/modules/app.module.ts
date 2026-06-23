@@ -14,6 +14,7 @@ import { BotUsageModule } from "./bot-usage/bot-usage.module";
 import { SkillsModule } from "./skills/skills.module";
 import { ScriptsModule } from "./scripts/scripts.module";
 import { SafetyModule } from "./safety/safety.module";
+import { McpModule } from "./mcp/mcp.module";
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { SafetyModule } from "./safety/safety.module";
     LlmModule,
     SnippetsModule,
     BotUsageModule,
+    McpModule,
     SkillsModule,
     ScriptsModule,
     SafetyModule,

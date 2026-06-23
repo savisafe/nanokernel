@@ -58,4 +58,22 @@ describe("SkillsRegistry.makeDispatcher trust gate", () => {
     expect(reg.trustOf(skill("x"))).toBe("builtin");
     expect(reg.trustOf(skill("y", { trust: "third-party" }))).toBe("third-party");
   });
+
+  it("blocks a skill whose capability is outside the allowed set", async () => {
+    const writer = skill("w", { capabilities: ["read", "write"] });
+    const reg = new SkillsRegistry([writer]);
+    const dispatch = reg.makeDispatcher([writer], CTX, { allowedCapabilities: ["read"] });
+    const out = await dispatch("w", {});
+    expect(out).toMatchObject({ error: expect.stringContaining("capability policy") });
+    expect(writer.execute).not.toHaveBeenCalled();
+  });
+
+  it("allows a skill whose capabilities are within the allowed set", async () => {
+    const reader = skill("r", { capabilities: ["read"] });
+    const reg = new SkillsRegistry([reader]);
+    const dispatch = reg.makeDispatcher([reader], CTX, { allowedCapabilities: ["read", "write"] });
+    const out = await dispatch("r", {});
+    expect(out).toEqual({ ran: "r" });
+    expect(reader.execute).toHaveBeenCalled();
+  });
 });

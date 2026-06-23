@@ -65,6 +65,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     v2.guardrails &&
     (v2.guardrails.safetyChecks?.length ||
       v2.guardrails.allowedSkillTrust?.length ||
+      v2.guardrails.allowedCapabilities?.length ||
       v2.guardrails.refuseReply ||
       v2.guardrails.rateLimitReply ||
       v2.guardrails.llmFallbackReply ||
@@ -78,6 +79,9 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
             : {}),
           ...(v2.guardrails.allowedSkillTrust?.length
             ? { allowedSkillTrust: v2.guardrails.allowedSkillTrust }
+            : {}),
+          ...(v2.guardrails.allowedCapabilities?.length
+            ? { allowedCapabilities: v2.guardrails.allowedCapabilities }
             : {}),
           ...(v2.guardrails.refuseReply ? { refuseReply: t(v2.guardrails.refuseReply)! } : {}),
           ...(v2.guardrails.rateLimitReply

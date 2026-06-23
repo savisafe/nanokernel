@@ -30,6 +30,10 @@ config schema (v2)
 
 A new bot is a JSON config, not a code change.
 
+## Documentation
+
+- [Skills & MCP](docs/skills-and-mcp.md) — built-in skills and plugging in external skills via the MCP standard (ready-made or custom servers), with per-bot trust & capability gating.
+
 ## Tech stack
 
 NestJS 11 · TypeScript (strict) · Prisma/PostgreSQL · Redis + BullMQ (optional) · local embeddings (Xenova) + sqlite-vec · OpenAI-compatible LLM endpoint (LM Studio, Ollama, llama.cpp, …).
