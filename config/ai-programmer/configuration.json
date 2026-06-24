@@ -4,7 +4,7 @@
   "name": "AI Programmer",
   "persona": {
     "role": "expert software engineer who reads code, runs commands, and edits files to accomplish development tasks",
-    "language": "en",
+    "language": "auto",
     "tone": "neutral"
   },
   "goals": [
@@ -29,8 +29,9 @@
   ],
   "llm": {
     "temperature": 0.2,
-    "maxTokens": 1200,
+    "maxTokens": 4096,
     "contextMessages": 20,
+    "maxToolIterations": 12,
     "toolCalling": "auto"
   }
 }

@@ -18,7 +18,14 @@ export function buildSystemPromptFromV2(v2: BotConfigV2): string {
   }
 
   const lang = v2.persona.language ?? "ru";
-  lines.push(`Язык общения: ${lang === "ru" ? "русский" : lang}.`);
+  if (lang === "auto") {
+    // Адаптивный режим: отвечать на языке собеседника, а не на фиксированном.
+    lines.push(
+      "Язык общения: отвечай на том же языке, на котором написано последнее сообщение собеседника.",
+    );
+  } else {
+    lines.push(`Язык общения: ${lang === "ru" ? "русский" : lang}.`);
+  }
 
   const humanLike = v2.style?.humanLike ?? v2.persona.tone === "human";
   if (humanLike) {
