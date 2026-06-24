@@ -521,6 +521,7 @@ export class DialogService {
                 },
               },
             ),
+            snap.bot.llm?.maxToolIterations,
           )
         : await this.llmService.complete(messages, llmOptions);
     if (out) {

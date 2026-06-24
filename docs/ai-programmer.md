@@ -86,7 +86,7 @@ curl -s localhost:3000/channels/http/message \
 
 The agent loop needs the same infrastructure as any nanokernel bot — Postgres
 (Prisma), Redis (BullMQ), and an OpenAI-compatible LLM endpoint with tool-calling
-(e.g. a local Ollama). Minimal `.env`:
+(e.g. a local llm). Minimal `.env`:
 
 ```bash
 BOT_CONFIGURATION=ai-programmer
@@ -94,7 +94,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/nanokernel?schema=pub
 REDIS_HOST=localhost
 REDIS_PORT=6379
 LLM_ENABLED=true
-LLM_BASE_URL=http://127.0.0.1:11434/v1   # Ollama, or any OpenAI-compatible API
+LLM_BASE_URL=http://127.0.0.1:11434/v1
 LLM_MODEL=llama3:latest
 DEV_WORKSPACE_ROOT=/abs/path/to/the/repo/the/agent/should/work/in
 ```

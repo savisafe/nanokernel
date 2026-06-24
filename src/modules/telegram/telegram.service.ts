@@ -231,8 +231,13 @@ export class TelegramService implements ChannelAdapter {
     const MIN_EDIT_INTERVAL_MS = 500;
     const MAX_DISPLAY_CHARS = 4000;
     const onLlmTextDelta = async (text: string): Promise<void> => {
-      if (!text) return;
-      const sliced = text.length > MAX_DISPLAY_CHARS ? text.slice(0, MAX_DISPLAY_CHARS) : text;
+      // Trim: thinking-модели (qwen3.5 и пр.) шлют первые content-дельты как
+      // пробелы/переводы строк. Они проходят `!text`, но Telegram отвергает
+      // placeholder с пробельным текстом ("Bad Request: text must be non-empty").
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const sliced =
+        trimmed.length > MAX_DISPLAY_CHARS ? trimmed.slice(0, MAX_DISPLAY_CHARS) : trimmed;
       const now = Date.now();
       if (placeholderId === null) {
         placeholderId = await this.sendMessage(message.chatId, sliced);
@@ -272,7 +277,7 @@ export class TelegramService implements ChannelAdapter {
     const sliced =
       finalText.length > MAX_DISPLAY_CHARS ? finalText.slice(0, MAX_DISPLAY_CHARS) : finalText;
     let sent: boolean;
-    if (!finalText) {
+    if (!finalText.trim()) {
       // Silent-блок (антифлуд с silent:true вернул пустой replyText) — ничего не шлём,
       // placeholder остаётся «висеть» только если уже был создан streaming'ом.
       sent = true;

@@ -24,7 +24,7 @@ labels: bug
 
 - nanokernel version / commit:
 - Node version:
-- LLM backend (LM Studio / Ollama / llama.cpp / …) and model:
+- LLM backend and model:
 - OS:
 
 ## Logs / context

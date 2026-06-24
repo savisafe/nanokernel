@@ -44,6 +44,7 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
     v2.llm?.maxTokens !== undefined ||
     v2.llm?.toolCalling !== undefined ||
     v2.llm?.contextMessages !== undefined ||
+    v2.llm?.maxToolIterations !== undefined ||
     v2.llm?.compaction !== undefined
       ? {
           ...(v2.llm.temperature !== undefined ? { temperature: v2.llm.temperature } : {}),
@@ -51,6 +52,9 @@ export function adaptV2ToResolved(id: string, v2: BotConfigV2): ResolvedBotConfi
           ...(v2.llm.toolCalling !== undefined ? { toolCalling: v2.llm.toolCalling } : {}),
           ...(v2.llm.contextMessages !== undefined
             ? { contextMessages: v2.llm.contextMessages }
+            : {}),
+          ...(v2.llm.maxToolIterations !== undefined
+            ? { maxToolIterations: v2.llm.maxToolIterations }
             : {}),
           ...(v2.llm.compaction !== undefined ? { compaction: v2.llm.compaction } : {}),
         }

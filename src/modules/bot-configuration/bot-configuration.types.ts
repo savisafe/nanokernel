@@ -34,6 +34,8 @@ export interface ResolvedBotLlmSettings {
   toolCalling?: "auto" | "off";
   /** Сколько последних сообщений истории передавать LLM. Имеет приоритет над env LLM_CONTEXT_MESSAGES. */
   contextMessages?: number;
+  /** Максимум итераций tool-loop в completeWithTools. По умолчанию 4. */
+  maxToolIterations?: number;
   /** Суммаризационная компакция контекста (см. ContextCompactionService). Выкл. по умолчанию. */
   compaction?: {
     enabled?: boolean;

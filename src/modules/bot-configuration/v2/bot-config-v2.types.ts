@@ -170,6 +170,8 @@ const llmSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
   /** Сколько сообщений истории передавать LLM. */
   contextMessages: z.number().int().min(2).max(50).optional(),
+  /** Максимум итераций tool-loop (write_file → read → run …). По умолчанию 4. */
+  maxToolIterations: z.number().int().min(1).max(50).optional(),
   /** "off" — не давать LLM function-calling (skills дёргает FSM/роутер). По умолчанию "auto". */
   toolCalling: z.enum(["auto", "off"]).optional(),
   /**

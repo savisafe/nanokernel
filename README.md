@@ -37,7 +37,7 @@ A new bot is a JSON config, not a code change.
 
 ## Tech stack
 
-NestJS 11 · TypeScript (strict) · Prisma/PostgreSQL · Redis + BullMQ (optional) · local embeddings (Xenova) + sqlite-vec · OpenAI-compatible LLM endpoint (LM Studio, Ollama, llama.cpp, …).
+NestJS 11 · TypeScript (strict) · Prisma/PostgreSQL · Redis + BullMQ (optional) · local embeddings (Xenova) + sqlite-vec · OpenAI-compatible LLM endpoint.
 
 ## Quickstart
 
@@ -61,6 +61,33 @@ Point a Telegram webhook at the running instance:
 ```bash
 npm run telegram:webhook:set
 ```
+
+#### Local development with ngrok
+
+Telegram delivers updates via webhook, so it needs a **public HTTPS URL** that reaches your local instance. In development, expose the app (default port `3000`) with [ngrok](https://ngrok.com/):
+
+```bash
+ngrok http 3000
+```
+
+Copy the `https://…` forwarding address from ngrok's output into `.env` — **base domain only, no path**; the webhook script appends `/webhooks/telegram/<secret>` for you:
+
+```bash
+# Multi-bot (recommended): config has channel.telegram.{tokenEnv, webhookSecret}
+TELEGRAM_WEBHOOK_BASE_URL=https://abcd-1234.ngrok-free.app
+
+# Legacy (single bot): TELEGRAM_BOT_TOKEN in env, no channel.telegram in config
+TELEGRAM_WEBHOOK_URL=https://abcd-1234.ngrok-free.app/webhooks/telegram
+```
+
+Then (re)register and verify the webhook:
+
+```bash
+npm run telegram:webhook:set    # register {baseUrl}/webhooks/telegram/<secret>
+npm run telegram:webhook:info   # show current webhook + delivery errors
+```
+
+> On ngrok's free tier the URL changes every restart — update `.env` and rerun `telegram:webhook:set` each time.
 
 ### Configuration
 

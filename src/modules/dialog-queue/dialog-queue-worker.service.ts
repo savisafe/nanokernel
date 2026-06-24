@@ -25,18 +25,17 @@ export class DialogQueueWorkerService implements OnModuleInit, OnApplicationShut
   private readonly connection = createRedisConnectionForBullmq();
   private worker: Worker | undefined;
   /** Полиморфный реестр каналов: воркер не знает про конкретные Telegram/WhatsApp. */
-  private readonly channels: ChannelRegistry;
+  private channels!: ChannelRegistry;
 
   constructor(
     @Inject(forwardRef(() => TelegramService))
-    telegramService: TelegramService,
+    private readonly telegramService: TelegramService,
     @Inject(forwardRef(() => WhatsAppService))
-    whatsAppService: WhatsAppService,
-  ) {
-    this.channels = new ChannelRegistry([telegramService, whatsAppService]);
-  }
+    private readonly whatsAppService: WhatsAppService,
+  ) {}
 
   onModuleInit() {
+    this.channels = new ChannelRegistry([this.telegramService, this.whatsAppService]);
     if (!isDialogQueueEnabled()) {
       this.logger.log("Dialog queue worker not started (DIALOG_QUEUE_ENABLED=false)");
       return;
