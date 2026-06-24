@@ -1,8 +1,26 @@
 {
   "mcpServers": {
     "dev": {
-      "command": "node",
-      "args": ["packs/dev/index.mjs"],
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--memory",
+        "1g",
+        "--cpus",
+        "2",
+        "--pids-limit",
+        "256",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "-v",
+        "C:/Users/User/Documents/agent-workspace:/workspace",
+        "nanokernel-dev-mcp:latest"
+      ],
+      "startupTimeoutMs": 60000,
       "trust": "third-party"
     }
   }

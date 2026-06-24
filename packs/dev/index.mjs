@@ -60,6 +60,43 @@ function safeResolve(rel) {
   return resolved;
 }
 
+/**
+ * Денилист катастрофических shell-команд (defense-in-depth, НЕ песочница).
+ * Цель — сетка от наивно-разрушительных команд запутавшейся модели, а не от
+ * целенаправленного обхода. Полную изоляцию shell даёт только OS-песочница (Docker).
+ */
+const SHELL_DENY = [
+  /\brm\b[^|;&]*\s-[a-z]*r/i, // rm -r / rm -rf (в любом порядке флагов)
+  /\brmdir\b/i,
+  /\bdel\b[^|;&]*\s\/[sq]/i, // del /s, del /q
+  /\brd\b[^|;&]*\s\/s/i, // rd /s
+  /\bRemove-Item\b[^|;&]*-Recurse/i,
+  /\b(format|mkfs|diskpart|fdisk)\b/i,
+  /\b(shutdown|reboot|halt)\b/i,
+  /:\s*\(\s*\)\s*\{.*\}\s*;/, // fork bomb
+  /\bgit\b[^|;&]*\bpush\b[^|;&]*--force/i,
+  /\bgit\b[^|;&]*\breset\b[^|;&]*--hard/i,
+  /\bnpm\b[^|;&]*\bpublish\b/i,
+  />\s*\/dev\/(sd|nvme|disk)/i,
+];
+
+/** Бросает, если команда выходит за джейл или попадает под денилист. */
+function assertShellSafe(command) {
+  for (const re of SHELL_DENY) {
+    if (re.test(command)) {
+      throw new Error(`command blocked by safety policy (matched ${re.source})`);
+    }
+  }
+  // Любое упоминание пути вне джейла (другой каталог/диск) — отказ.
+  const withSep = WORKSPACE_ROOT.endsWith(path.sep) ? WORKSPACE_ROOT : WORKSPACE_ROOT + path.sep;
+  for (const m of command.matchAll(/(?:[A-Za-z]:[\\/]|\/)[^\s"'|;&]*/g)) {
+    const abs = path.resolve(m[0]);
+    if (abs !== WORKSPACE_ROOT && !abs.startsWith(withSep)) {
+      throw new Error(`absolute path "${m[0]}" escapes the workspace jail`);
+    }
+  }
+}
+
 function ok(text) {
   return { content: [{ type: "text", text: String(text).slice(0, MAX_OUTPUT_CHARS) }] };
 }
@@ -138,6 +175,7 @@ server.registerTool(
   },
   async ({ command, timeoutMs }) => {
     try {
+      assertShellSafe(command);
       const { stdout, stderr } = await execAsync(command, {
         cwd: WORKSPACE_ROOT,
         timeout: timeoutMs ?? SHELL_TIMEOUT_MS,
