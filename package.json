@@ -40,6 +40,7 @@
     "test:watch": "vitest",
     "db:up": "docker compose up -d postgres redis",
     "db:down": "docker compose down",
+    "dev:sandbox:build": "docker build -t nanokernel-dev-mcp packs/dev",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",

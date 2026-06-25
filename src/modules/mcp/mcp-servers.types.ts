@@ -75,9 +75,36 @@ export function resolveMcpConfigFile(): string {
 }
 
 /**
+ * Рекурсивно подставляет `${VAR}` из process.env в строковые значения конфига.
+ * Делается ПОСЛЕ JSON.parse, поэтому значение (напр. путь `C:\…`) может содержать
+ * любые символы без оглядки на JSON-экранирование. Неизвестная/пустая переменная
+ * → явная ошибка: лучше упасть, чем тихо собрать битый путь монтирования или URL.
+ */
+function expandEnvDeep(value: unknown, file: string): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
+      const v = process.env[name];
+      if (v === undefined || v === "") {
+        throw new Error(`mcp.json at ${file} references env "${name}" which is not set`);
+      }
+      return v;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => expandEnvDeep(v, file));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, expandEnvDeep(v, file)]),
+    );
+  }
+  return value;
+}
+
+/**
  * Загружает и валидирует mcp.json. Файла нет → пустой конфиг (MCP опционален).
  * Битый JSON/схема → бросаем с понятным сообщением (явная ошибка лучше тихого
- * запуска без заявленных серверов).
+ * запуска без заявленных серверов). Строки поддерживают `${VAR}` из окружения.
  */
 export function loadMcpConfig(): McpConfig {
   const file = resolveMcpConfigFile();
@@ -91,6 +118,7 @@ export function loadMcpConfig(): McpConfig {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`mcp.json at ${file} is not valid JSON: ${msg}`);
   }
+  raw = expandEnvDeep(raw, file);
   const parsed = mcpConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues
